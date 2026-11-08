@@ -1,0 +1,81 @@
+{
+  "$schema": "https://raw.githubusercontent.com/modelcontextprotocol/mcpb/70fe3b34cd6dff1b3bba046638edc72a6467a4fb/schemas/mcpb-manifest-v0.4.schema.json",
+  "manifest_version": "0.4",
+  "name": "veqtor-workspace-pilot",
+  "display_name": "Veqtor Workspace (pilot)",
+  "version": "0.0.3",
+  "description": "Pilot: Claude writes its own Python for copies of selected Word files; a checker reports what changed.",
+  "long_description": "Experimental. Put copies of the documents into the inputs/ folder of the pilot workspace. Claude inspects and edits them with its own Python code under a macOS sandbox: inputs/ is read-only, results are saved in work/, there is no network. check_docx undoes the new tracked changes and comments, compares the result with the original and reports defects, compatibility warnings and checks it did not perform. It does not certify legal wording, layout or fields.",
+  "author": {
+    "name": "Ilya Shilov",
+    "url": "https://veqtor.pro"
+  },
+  "license": "Apache-2.0",
+  "server": {
+    "type": "uv",
+    "entry_point": "veqtor_workspace/server.py",
+    "mcp_config": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--frozen",
+        "--no-dev",
+        "--directory",
+        "${__dirname}",
+        "veqtor-workspace",
+        "--workspace",
+        "${user_config.workspace}",
+        "--author",
+        "${user_config.author}"
+      ],
+      "env": {
+        "UV_NO_PROGRESS": "1"
+      }
+    }
+  },
+  "user_config": {
+    "workspace": {
+      "type": "directory",
+      "title": "Pilot workspace",
+      "description": "Folder holding inputs/ (copies Claude may read) and work/ (where results are saved).",
+      "required": true
+    },
+    "author": {
+      "type": "string",
+      "title": "Tracked-change author",
+      "description": "The name written into new tracked changes and comments.",
+      "required": true,
+      "sensitive": false
+    }
+  },
+  "tools": [
+    {
+      "name": "workspace_info",
+      "description": "List the protected input copies, outputs, author and the short editing recipe."
+    },
+    {
+      "name": "run_python",
+      "description": "Run Python in the sandbox: inputs/ read-only, work/ writable, no network."
+    },
+    {
+      "name": "check_docx",
+      "description": "Compare a DOCX result with its original: defects, compatibility warnings and checks not performed."
+    }
+  ],
+  "tools_generated": false,
+  "keywords": [
+    "docx",
+    "contracts",
+    "python",
+    "pilot",
+    "local"
+  ],
+  "compatibility": {
+    "platforms": [
+      "darwin"
+    ],
+    "runtimes": {
+      "python": ">=3.12,<3.15"
+    }
+  }
+}
