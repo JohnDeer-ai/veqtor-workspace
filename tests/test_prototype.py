@@ -188,8 +188,8 @@ print(json.dumps({"pdfs": texts, "word": Document(folder / "appendix.docx").para
     assert before == {p.name: sha256(p.read_bytes()).hexdigest() for p in sources.iterdir()}
 
 
-def test_long_or_disabled_deadline_and_output_above_former_size_cap(workspace):
-    for timeout in (121, 3600, None):
+def test_bounded_deadline_and_output_above_former_size_cap(workspace):
+    for timeout in (121, 270, None):
         result = workspace.run("print('allowed')", timeout)
         assert result["exit_code"] == 0, result
     result = workspace.run('''
@@ -199,6 +199,6 @@ with atomic_save("work/large.bin") as draft:
 ''')
     assert result["exit_code"] == 0, result
     assert (workspace.root / "work/large.bin").stat().st_size == 9 * 1024 * 1024
-    for invalid in (0, -1, float("nan"), float("inf")):
+    for invalid in (0, -1, 271, float("nan"), float("inf")):
         with pytest.raises(ValueError):
             workspace.run("print('should not run')", invalid)

@@ -14,6 +14,7 @@ import uuid
 from pathlib import Path
 
 MAX_REPLY = 12_000
+DEFAULT_CALL_SECONDS = 270
 
 
 def _quoted(path: Path) -> str:
@@ -21,7 +22,8 @@ def _quoted(path: Path) -> str:
 
 
 class Workspace:
-    def __init__(self, root: Path, python: Path, author: str, project: Path | None = None):
+    def __init__(self, root: Path, python: Path, author: str, project: Path | None = None,
+                 call_timeout_seconds: float = DEFAULT_CALL_SECONDS, managed_process_group: bool = False):
         if platform.system() != "Darwin" or not Path("/usr/bin/sandbox-exec").exists():
             raise RuntimeError("This prototype requires macOS sandbox-exec; no unrestricted fallback.")
         self.root = root.expanduser().resolve()
@@ -31,6 +33,10 @@ class Workspace:
         if self.project and (self.root == self.project or not self.root.is_relative_to(self.project)):
             raise ValueError("Private state must be inside the selected project folder.")
         self.python = python.expanduser().absolute()
+        if not math.isfinite(call_timeout_seconds) or call_timeout_seconds <= 0:
+            raise ValueError("The connection's call timeout must be positive and finite.")
+        self.call_timeout_seconds = call_timeout_seconds
+        self.managed_process_group = managed_process_group
         self.author = author.strip()
         if not self.author:
             raise ValueError("A tracked-change author is required.")
@@ -57,7 +63,7 @@ class Workspace:
 
     def info(self) -> dict:
         return {
-            "prototype": "0.0.5", "author": self.author,
+            "prototype": "0.0.6", "author": self.author,
             "project_folder": str(self.project) if self.project else None,
             "cwd": str(self.root), "python": str(self.python),
             "inputs": sorted(str(p.relative_to(self.root)) for p in (self.root / "inputs").rglob("*") if p.is_file()),
@@ -66,12 +72,14 @@ class Workspace:
             "recipe_text": (self.package / "veqtor_workspace/RECIPE.md").read_text(encoding="utf-8"),
             "execution": "Fresh Python process per call; files persist. Project and inputs read-only, work writable, no network. "
                          "For in-place editing use document_task(start), run_python/check_docx with task_id, then document_task(save).",
-            "limits": {"default_timeout_seconds": 300, "max_timeout_seconds": None,
-                       "timeout_null": "No server deadline; the MCP client may have its own deadline.",
+            "limits": {"default_timeout_seconds": self.call_timeout_seconds,
+                       "max_timeout_seconds": self.call_timeout_seconds,
+                       "scope": "Whole MCP call, including setup, checks and saving; no disabled deadline or queue.",
                        "bytes_per_written_file": None, "reply_bytes_per_stream": MAX_REPLY},
             "preview": {"configured": (self.root / ".preview.json").is_file(),
                         "usage": "check_docx(render=True); reuse preview_id with preview_pages for more pages",
-                        "default_timeout_seconds": 60, "max_timeout_seconds": 300, "max_images_per_reply": 3},
+                        "default_timeout_seconds": min(60, self.call_timeout_seconds),
+                        "max_timeout_seconds": self.call_timeout_seconds, "max_images_per_reply": 3},
         }
 
     def outputs(self) -> list[str]:
@@ -98,11 +106,12 @@ class Workspace:
 (allow file-read* file-write* (literal "/dev/null") (literal "/dev/urandom") (literal "/dev/random"))
 '''
 
-    def run(self, code: str, timeout_seconds: float | None = 300) -> dict:
+    def run(self, code: str, timeout_seconds: float | None = None) -> dict:
         if not isinstance(code, str) or not code.strip() or len(code) > 100_000:
             raise ValueError("Code must contain 1–100,000 characters.")
-        if timeout_seconds is not None and (not math.isfinite(timeout_seconds) or timeout_seconds <= 0):
-            raise ValueError("timeout_seconds must be positive, or null for no server deadline.")
+        timeout_seconds = self.call_timeout_seconds if timeout_seconds is None else timeout_seconds
+        if not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= self.call_timeout_seconds:
+            raise ValueError(f"timeout_seconds must be positive and at most {self.call_timeout_seconds}; no unlimited calls.")
         if not self.lock.acquire(blocking=False):
             raise ValueError("A script is already running in this workspace. Wait for its result.")
         try:
@@ -110,7 +119,7 @@ class Workspace:
         finally:
             self.lock.release()
 
-    def _run(self, code: str, timeout_seconds: float | None) -> dict:
+    def _run(self, code: str, timeout_seconds: float) -> dict:
         run_id = uuid.uuid4().hex[:12]
         stem = self.root / ".runs" / run_id
         script = stem.with_suffix(".py")
@@ -127,7 +136,7 @@ class Workspace:
             process = subprocess.Popen(
                 ["/usr/bin/sandbox-exec", "-p", self.profile(), str(self.python), "-B", "-c", bootstrap],
                 cwd=self.root, env=env, stdin=subprocess.DEVNULL, stdout=out, stderr=err,
-                start_new_session=True,
+                start_new_session=not self.managed_process_group,
             )
             try:
                 process.wait(timeout=timeout_seconds)
@@ -136,7 +145,10 @@ class Workspace:
             finally:
                 # Also stop surviving children after an otherwise successful script.
                 try:
-                    os.killpg(process.pid, signal.SIGKILL)
+                    if self.managed_process_group:
+                        process.kill()  # The MCP supervisor also stops this call's entire process group.
+                    else:
+                        os.killpg(process.pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
                 process.wait()

@@ -4,7 +4,6 @@
 import asyncio
 import json
 import os
-import platform
 import shutil
 import sys
 from pathlib import Path
@@ -17,16 +16,6 @@ from test_checks import ME, check_docx, docx, para, rev, run
 
 from veqtor_workspace.runner import Workspace
 from veqtor_workspace.tasks import DocumentTasks, digest
-
-
-@pytest.fixture
-def project(tmp_path):
-    if platform.system() != "Darwin":
-        pytest.skip("OS sandbox tests require macOS")
-    folder = tmp_path / "договоры с пробелами"
-    folder.mkdir()
-    workspace = Workspace(folder / ".veqtor", Path(os.environ.get("VEQTOR_TEST_PYTHON", sys.executable)), ME, folder)
-    return workspace, DocumentTasks(workspace)
 
 
 def test_model_manual_model_rounds_use_latest_saved_baseline(project):
@@ -191,7 +180,7 @@ with atomic_save(path) as draft:
             archive.writestr(info, data)
 print("edited")
 '''
-            result = await call("run_python", {"task_id": task["task_id"], "code": code, "timeout_seconds": None})
+            result = await call("run_python", {"task_id": task["task_id"], "code": code})
             assert result["stdout"] == "edited\n", result
             check = await call("check_docx", {"task_id": task["task_id"]})
             assert not check["summary"]["defects"], check

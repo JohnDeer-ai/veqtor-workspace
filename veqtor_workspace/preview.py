@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import signal
@@ -18,7 +19,6 @@ import uuid
 from pathlib import Path
 
 DEFAULT_SECONDS = 60
-MAX_SECONDS = 300
 MAX_IMAGES = 3
 
 
@@ -56,10 +56,10 @@ def read_preview(root: Path, preview_id: str, original: Path, candidate: Path) -
 
 
 def render_pair(original: Path, candidate: Path, output: Path, config: Path,
-                timeout_seconds: float = DEFAULT_SECONDS) -> dict:
+                timeout_seconds: float = DEFAULT_SECONDS, managed_process_group: bool = False) -> dict:
     """Render both files once, sharing one deadline; return evidence, not visual approval."""
-    if not 0 < timeout_seconds <= MAX_SECONDS:
-        raise ValueError(f"Preview timeout must be between 0 and {MAX_SECONDS} seconds.")
+    if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+        raise ValueError("Preview timeout must be positive and finite.")
     result = {"status": "not_available", "timeout_seconds": timeout_seconds,
               "visual_review": "not_performed", "images": [],
               "limits": "LibreOffice preview, not native Word. Review the images; comments and accept/reject are not tested."}
@@ -94,13 +94,16 @@ def render_pair(original: Path, candidate: Path, output: Path, config: Path,
                 raise subprocess.TimeoutExpired(command, timeout_seconds)
             with (directory / f"{name}.log").open("wb") as log:
                 process = subprocess.Popen(command, env=env, stdin=subprocess.DEVNULL,
-                                           stdout=log, stderr=log, start_new_session=True)
+                                           stdout=log, stderr=log, start_new_session=not managed_process_group)
                 try:
                     process.wait(timeout=remaining)
                 finally:
                     # Includes descendants, even when the renderer exits before them.
                     try:
-                        os.killpg(process.pid, signal.SIGKILL)
+                        if managed_process_group:
+                            process.kill()  # The supervisor stops all descendants at the end of the call.
+                        else:
+                            os.killpg(process.pid, signal.SIGKILL)
                     except ProcessLookupError:
                         pass
                     process.wait()

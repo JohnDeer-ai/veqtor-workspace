@@ -41,6 +41,12 @@ as `recipe_text`; a separate file-reading call is unnecessary.
   a failed write leaves the old file intact. This optional helper protects task-copy
   writes; the final project-file replacement always uses it. A killed process may leave
   a hidden temporary file. It does not validate document content or undo a completed save.
+- Saving records the intended result hash before replacing the project file. If the
+  final status write fails or the call stops after replacement, the next status read
+  recovers the result by comparing hashes. Editing is closed once saving begins.
+  `document_task(action="status", task_id=...)` inspects the outcome without saving:
+  `saved`, `saved_then_changed`, `not_saved`, or `outcome_unknown`. A newer external
+  version is never overwritten merely to resolve an uncertain earlier save.
 - Each new task uses the current on-disk file as its baseline, including the user's
   intervening Word edits. Save Word before starting; unsaved edits cannot be read.
   Save compares the project file with the starting snapshot and refuses a detected
@@ -55,10 +61,18 @@ as `recipe_text`; a separate file-reading call is unnecessary.
 - Edits should mark only the text that actually changes, leaving identical surrounding
   text outside Track Changes. Explicit requests to accept/reject revisions or edit/delete
   comments are allowed; the conservative preservation checker needs interpretation for them.
-- Python processes start fresh; files persist. Calls run sequentially. The default
-  deadline is 300 seconds, with no hard maximum; `timeout_seconds=null` disables the
-  server deadline. Client-side MCP timeouts are separate (configure a longer tool
-  timeout for long calls). There is no written-file size cap. Actual disk space, memory,
+- Python processes start fresh; files persist. One call runs at a time; busy calls
+  fail immediately and are never queued. Every MCP call runs in a temporary process
+  group with a 270-second ceiling, including checks, rendering, snapshots and saving.
+  Received cancellation, server deadline and server-process death stop this group
+  and its ordinary children. This is a per-call worker, not a persistent job service.
+  The model may shorten the Python/preview timer but cannot disable it or exceed the
+  connection ceiling. Set `--call-timeout-seconds` below the client's waiting limit,
+  leaving time for cleanup and response delivery (for example 270 vs 330 seconds).
+  A client that silently stops waiting without cancelling cannot be detected; the
+  server ceiling remains the fallback. A response lost after a successful save does
+  not undo it: inspect status before assuming success or failure. There is no
+  written-file size cap. Actual disk space, memory,
   libraries and model context still bound practical workloads. Output replies are bounded; full logs and
   scripts remain in `.runs/` and are read-only to task code.
 - The checker undoes the new tracked changes and new comments and compares the whole
@@ -71,8 +85,8 @@ as `recipe_text`; a separate file-reading call is unnecessary.
   content and 5,000 members: larger packages return `not_checked`, not a corruption
   finding. This does not prevent Python from reading or editing those files.
 - `check_docx(render=True)` optionally uses an existing renderer to preview the original
-  and candidate within one shared deadline: 60 seconds by default, configurable up to
-  300 with `preview_timeout_seconds`. Converter children are stopped on
+  and candidate within one shared deadline: 60 seconds by default, configurable with
+  `preview_timeout_seconds` within the connection's whole-call ceiling. Converter children are stopped on
   timeout; there are no automatic retries. It reports page counts and differing PNGs,
   renders every page and returns up to three images per reply. To inspect more pages,
   reuse the returned `preview_id` with `preview_pages=[4, 5, 6]`; set `preview_side="original"`

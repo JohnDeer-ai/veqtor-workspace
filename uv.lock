@@ -889,9 +889,10 @@ wheels = [
 
 [[package]]
 name = "veqtor-workspace"
-version = "0.0.5"
+version = "0.0.6"
 source = { editable = "." }
 dependencies = [
+    { name = "anyio" },
     { name = "lxml" },
     { name = "mcp" },
     { name = "pypdf" },
@@ -905,6 +906,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "anyio", specifier = ">=4.5,<5" },
     { name = "lxml", specifier = ">=6.1,<7" },
     { name = "mcp", specifier = "==2.0.0" },
     { name = "pypdf", specifier = ">=7,<8" },

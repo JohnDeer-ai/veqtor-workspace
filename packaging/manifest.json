@@ -3,7 +3,7 @@
   "manifest_version": "0.4",
   "name": "veqtor-workspace-pilot",
   "display_name": "Veqtor Workspace (pilot)",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "description": "Pilot: edit project documents with model-written Python, automatic task snapshots and a DOCX check.",
   "long_description": "Select the folder containing your documents. Each editing task snapshots the latest saved file under a hidden .veqtor/ folder, edits a private copy and saves back to the same path after checking for conflicting changes. Python can read the project and write only task copies; no network. check_docx reports preservation findings and checks not performed. It does not certify legal wording, layout or native Word behavior. Save Word changes before starting a task.",
   "author": {
@@ -55,7 +55,7 @@
     },
     {
       "name": "document_task",
-      "description": "Start a task with a snapshot of the latest file; save its result back after checking for conflicting changes."
+      "description": "Snapshot the latest file, save after conflict checks, or inspect the outcome of an interrupted save."
     },
     {
       "name": "run_python",

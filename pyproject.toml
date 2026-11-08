@@ -4,11 +4,11 @@ build-backend = "hatchling.build"
 
 [project]
 name = "veqtor-workspace"
-version = "0.0.5"
+version = "0.0.6"
 description = "Local Python workspace for adaptive document editing over MCP"
 requires-python = ">=3.12"
 license = "Apache-2.0"
-dependencies = ["mcp==2.0.0", "lxml>=6.1,<7", "python-docx>=1.2,<2", "pypdf>=7,<8"]
+dependencies = ["mcp==2.0.0", "anyio>=4.5,<5", "lxml>=6.1,<7", "python-docx>=1.2,<2", "pypdf>=7,<8"]
 
 [dependency-groups]
 dev = ["pytest>=8,<10"]
