@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import platform
 import signal
@@ -20,10 +21,15 @@ def _quoted(path: Path) -> str:
 
 
 class Workspace:
-    def __init__(self, root: Path, python: Path, author: str):
+    def __init__(self, root: Path, python: Path, author: str, project: Path | None = None):
         if platform.system() != "Darwin" or not Path("/usr/bin/sandbox-exec").exists():
             raise RuntimeError("This prototype requires macOS sandbox-exec; no unrestricted fallback.")
         self.root = root.expanduser().resolve()
+        self.project = project.expanduser().resolve(strict=True) if project else None
+        if self.project is not None and not self.project.is_dir():
+            raise ValueError("The selected project must be a directory.")
+        if self.project and (self.root == self.project or not self.root.is_relative_to(self.project)):
+            raise ValueError("Private state must be inside the selected project folder.")
         self.python = python.expanduser().absolute()
         self.author = author.strip()
         if not self.author:
@@ -51,14 +57,18 @@ class Workspace:
 
     def info(self) -> dict:
         return {
-            "prototype": "0.0.4", "author": self.author,
+            "prototype": "0.0.5", "author": self.author,
+            "project_folder": str(self.project) if self.project else None,
             "cwd": str(self.root), "python": str(self.python),
             "inputs": sorted(str(p.relative_to(self.root)) for p in (self.root / "inputs").rglob("*") if p.is_file()),
             "outputs": self.outputs(),
             "recipe": str(self.package / "veqtor_workspace/RECIPE.md"),
             "recipe_text": (self.package / "veqtor_workspace/RECIPE.md").read_text(encoding="utf-8"),
-            "execution": "Fresh Python process per call; files persist. Inputs read-only, work writable, no network.",
-            "limits": {"timeout_seconds": 120, "bytes_per_written_file": 8_388_608, "reply_bytes_per_stream": MAX_REPLY},
+            "execution": "Fresh Python process per call; files persist. Project and inputs read-only, work writable, no network. "
+                         "For in-place editing use document_task(start), run_python/check_docx with task_id, then document_task(save).",
+            "limits": {"default_timeout_seconds": 300, "max_timeout_seconds": None,
+                       "timeout_null": "No server deadline; the MCP client may have its own deadline.",
+                       "bytes_per_written_file": None, "reply_bytes_per_stream": MAX_REPLY},
             "preview": {"configured": (self.root / ".preview.json").is_file(),
                         "usage": "check_docx(render=True); reuse preview_id with preview_pages for more pages",
                         "default_timeout_seconds": 60, "max_timeout_seconds": 300, "max_images_per_reply": 3},
@@ -74,6 +84,8 @@ class Workspace:
     def profile(self) -> str:
         read = [self.root, self.package, *self.runtime_roots,
                 Path("/System"), Path("/usr/lib"), Path("/usr/share"), Path("/Library/Apple")]
+        if self.project:
+            read.append(self.project)
         paths = " ".join(f"(subpath {_quoted(p)})" for p in read)
         return f'''(version 1)
 (deny default)
@@ -86,11 +98,11 @@ class Workspace:
 (allow file-read* file-write* (literal "/dev/null") (literal "/dev/urandom") (literal "/dev/random"))
 '''
 
-    def run(self, code: str, timeout_seconds: int = 30) -> dict:
+    def run(self, code: str, timeout_seconds: float | None = 300) -> dict:
         if not isinstance(code, str) or not code.strip() or len(code) > 100_000:
             raise ValueError("Code must contain 1–100,000 characters.")
-        if not 1 <= timeout_seconds <= 120:
-            raise ValueError("timeout_seconds must be between 1 and 120.")
+        if timeout_seconds is not None and (not math.isfinite(timeout_seconds) or timeout_seconds <= 0):
+            raise ValueError("timeout_seconds must be positive, or null for no server deadline.")
         if not self.lock.acquire(blocking=False):
             raise ValueError("A script is already running in this workspace. Wait for its result.")
         try:
@@ -98,7 +110,7 @@ class Workspace:
         finally:
             self.lock.release()
 
-    def _run(self, code: str, timeout_seconds: int) -> dict:
+    def _run(self, code: str, timeout_seconds: float | None) -> dict:
         run_id = uuid.uuid4().hex[:12]
         stem = self.root / ".runs" / run_id
         script = stem.with_suffix(".py")
@@ -109,12 +121,7 @@ class Workspace:
             "HOME": str(self.root / "work/.home"), "TMPDIR": str(self.root / "work/.tmp"),
             "VEQTOR_AUTHOR": self.author,
         }
-        # Resource limits are applied inside the isolated interpreter before the task script.
-        bootstrap = (
-            "import resource,runpy; "
-            "resource.setrlimit(resource.RLIMIT_FSIZE,(8388608,8388608)); "
-            f"runpy.run_path({str(script)!r},run_name='__main__')"
-        )
+        bootstrap = f"import runpy; runpy.run_path({str(script)!r},run_name='__main__')"
         timed_out = False
         with stem.with_suffix(".stdout").open("wb") as out, stem.with_suffix(".stderr").open("wb") as err:
             process = subprocess.Popen(

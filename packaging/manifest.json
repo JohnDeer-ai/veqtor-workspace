@@ -3,9 +3,9 @@
   "manifest_version": "0.4",
   "name": "veqtor-workspace-pilot",
   "display_name": "Veqtor Workspace (pilot)",
-  "version": "0.0.4",
-  "description": "Pilot: Claude writes its own Python for copies of selected Word files; a checker reports what changed.",
-  "long_description": "Experimental. Put copies of the documents into the inputs/ folder of the pilot workspace. Claude inspects and edits them with its own Python code under a macOS sandbox: inputs/ is read-only, results are saved in work/, there is no network. check_docx undoes the new tracked changes and comments, compares the result with the original and reports defects, compatibility warnings and checks it did not perform. It does not certify legal wording, layout or fields.",
+  "version": "0.0.5",
+  "description": "Pilot: edit project documents with model-written Python, automatic task snapshots and a DOCX check.",
+  "long_description": "Select the folder containing your documents. Each editing task snapshots the latest saved file under a hidden .veqtor/ folder, edits a private copy and saves back to the same path after checking for conflicting changes. Python can read the project and write only task copies; no network. check_docx reports preservation findings and checks not performed. It does not certify legal wording, layout or native Word behavior. Save Word changes before starting a task.",
   "author": {
     "name": "Ilya Shilov",
     "url": "https://veqtor.pro"
@@ -23,7 +23,7 @@
         "--directory",
         "${__dirname}",
         "veqtor-workspace",
-        "--workspace",
+        "--project",
         "${user_config.workspace}",
         "--author",
         "${user_config.author}"
@@ -36,8 +36,8 @@
   "user_config": {
     "workspace": {
       "type": "directory",
-      "title": "Pilot workspace",
-      "description": "Folder holding inputs/ (copies Claude may read) and work/ (where results are saved).",
+      "title": "Document project folder",
+      "description": "Folder containing the actual documents. Task snapshots stay in its hidden .veqtor/ subfolder. When updating from 0.0.4, select the document folder here.",
       "required": true
     },
     "author": {
@@ -54,8 +54,12 @@
       "description": "List the protected input copies, outputs, author and the short editing recipe."
     },
     {
+      "name": "document_task",
+      "description": "Start a task with a snapshot of the latest file; save its result back after checking for conflicting changes."
+    },
+    {
       "name": "run_python",
-      "description": "Run Python in the sandbox: inputs/ read-only, work/ writable, no network."
+      "description": "Run Python: project and task snapshot read-only, task work/ writable, no network."
     },
     {
       "name": "check_docx",

@@ -64,11 +64,16 @@ LOCATED = (W + "p", W + "tblPr", W + "tblGrid", W + "trPr", W + "tcPr", W + "tbl
 FINDINGS = ("authors", "dates", "ids", "structure", "placement", "existing", "untracked", "not_undone")
 
 
+class CheckLimit(Exception):
+    """A resource limit of this checker, not evidence of document damage."""
+
+
 def _package(path: Path) -> tuple[dict[str, bytes], dict[str, ET._Element]]:
     with ZipFile(path) as archive:
         infos = archive.infolist()
         if len(infos) > 5000 or sum(i.file_size for i in infos) > 64 * 1024 * 1024:
-            raise ValueError("The prototype checks DOCX packages up to 64 MB expanded and 5,000 members.")
+            raise CheckLimit("This checker supports up to 64 MiB expanded and 5,000 ZIP members. "
+                             "Editing is still available; preservation was not checked.")
         if len({i.filename for i in infos}) != len(infos):
             raise ValueError("Duplicate ZIP members.")
         parts = {i.filename: archive.read(i) for i in infos if not i.is_dir()}
@@ -452,6 +457,10 @@ def check_docx(original: Path, candidate: Path, author: str) -> dict:
     try:
         before, left = _package(original)
         after, right = _package(candidate)
+    except CheckLimit as exc:
+        return {"status": "not_checked", "summary": {"defects": [], "warnings": [],
+                "not_checked": ["docx_preservation"]},
+                "checks": [{"check": "docx_preservation", "status": "not_checked", "detail": str(exc)}]}
     except (OSError, ValueError, ET.XMLSyntaxError, BadZipFile, RuntimeError) as exc:
         return {"status": "issues_found", "summary": {"defects": ["package_and_xml"], "warnings": [], "not_checked": []},
                 "checks": [{"check": "package_and_xml", "status": "failed", "detail": str(exc)}]}

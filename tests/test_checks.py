@@ -4,6 +4,7 @@
 from zipfile import ZipFile
 
 import pytest
+
 from veqtor_workspace.checks import check_docx
 
 NS = ('xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
@@ -52,6 +53,15 @@ def check(tmp_path, original, candidate, original_parts=None, candidate_parts=No
     report = check_docx(docx(tmp_path / "original.docx", original, original_parts),
                         docx(tmp_path / "candidate.docx", candidate, candidate_parts), ME)
     return {c["check"] for c in report["checks"] if c["status"] == "failed"}, report
+
+
+def test_checker_resource_limit_is_not_document_damage(tmp_path):
+    path = docx(tmp_path / "large.docx", [para(run("Unchanged"))],
+                {f"media/{i}.bin": b"x" for i in range(5000)})
+    report = check_docx(path, path, ME)
+    assert report["status"] == "not_checked"
+    assert report["summary"]["defects"] == []
+    assert report["summary"]["not_checked"] == ["docx_preservation"]
 
 
 CELL = '<w:tcPr><w:tcW w:w="100" w:type="dxa"/>{change}</w:tcPr>'

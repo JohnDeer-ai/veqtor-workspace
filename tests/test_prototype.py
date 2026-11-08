@@ -12,6 +12,7 @@ import pytest
 from mcp import StdioServerParameters
 from mcp.client import Client
 from mcp.client.stdio import stdio_client
+
 from veqtor_workspace.runner import Workspace
 
 
@@ -86,7 +87,7 @@ def test_mcp_stdio_end_to_end(workspace, mode):
         async with Client(stdio_client(params), mode=mode) as client:
             catalog = await client.list_tools()
             tools = catalog.tools if hasattr(catalog, "tools") else catalog
-            assert {t.name for t in tools} == {"workspace_info", "run_python", "check_docx"}
+            assert {t.name for t in tools} == {"workspace_info", "document_task", "run_python", "check_docx"}
             info = await client.call_tool("workspace_info", {})
             info_data = json.loads(info.content[0].text)
             if "result" in info_data:
@@ -121,13 +122,12 @@ assert not draft.exists()
     assert target.read_bytes() == b"checked new file"
 
 
-@pytest.mark.parametrize("failure", ["validation", "size_limit", "timeout"])
+@pytest.mark.parametrize("failure", ["validation", "timeout"])
 def test_atomic_save_keeps_previous_file_on_failure(workspace, failure):
     target = workspace.root / "work/result.docx"
     target.write_bytes(b"previous complete file")
     action = {
         "validation": "draft.write_bytes(b'bad result'); raise ValueError('validation failed')",
-        "size_limit": "draft.write_bytes(b'x' * (9 * 1024 * 1024))",
         "timeout": "draft.write_bytes(b'unfinished result'); import time; time.sleep(10)",
     }[failure]
     result = workspace.run(
@@ -141,7 +141,7 @@ def test_atomic_save_keeps_previous_file_on_failure(workspace, failure):
         assert not list(target.parent.glob(".result-*.docx"))
 
 
-def test_read_pdf_collection_and_docx_including_input_over_write_limit(workspace):
+def test_read_synthetic_pdf_collection_and_docx_including_large_input(workspace):
     from hashlib import sha256
 
     from docx import Document
@@ -186,3 +186,19 @@ print(json.dumps({"pdfs": texts, "word": Document(folder / "appendix.docx").para
         assert f"Reference {number}: payment evidence" in data["pdfs"][f"reference-{number:02}.pdf"]
     assert data["word"] == "Supporting Word appendix"
     assert before == {p.name: sha256(p.read_bytes()).hexdigest() for p in sources.iterdir()}
+
+
+def test_long_or_disabled_deadline_and_output_above_former_size_cap(workspace):
+    for timeout in (121, 3600, None):
+        result = workspace.run("print('allowed')", timeout)
+        assert result["exit_code"] == 0, result
+    result = workspace.run('''
+from veqtor_workspace.files import atomic_save
+with atomic_save("work/large.bin") as draft:
+    draft.write_bytes(b'x' * (9 * 1024 * 1024))
+''')
+    assert result["exit_code"] == 0, result
+    assert (workspace.root / "work/large.bin").stat().st_size == 9 * 1024 * 1024
+    for invalid in (0, -1, float("nan"), float("inf")):
+        with pytest.raises(ValueError):
+            workspace.run("print('should not run')", invalid)
