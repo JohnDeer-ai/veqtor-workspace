@@ -18,7 +18,7 @@ from veqtor_workspace.preview import read_preview, render_pair, select_pages
 
 def build_server(workspace: Workspace) -> MCPServer:
     server = MCPServer("veqtor-workspace", instructions=(
-        "Experimental local document workspace. Start with workspace_info, then read the RECIPE.md it names. "
+        "Experimental local document workspace. Start with workspace_info and follow its included recipe_text. "
         "Write your own Python to inspect and edit selected copies. inputs/ is read-only; save in work/. "
         "Files persist, Python variables do not. No network or personal environment is available. "
         "Use the configured author for genuine Word revisions/comments. Call check_docx on DOCX results; "
@@ -28,7 +28,7 @@ def build_server(workspace: Workspace) -> MCPServer:
 
     @server.tool(annotations=ToolAnnotations(readOnlyHint=True))
     def workspace_info() -> dict:
-        """List protected input copies, outputs, author and the short editing recipe."""
+        """Return protected inputs, outputs, author and the full editing recipe; no separate file read needed."""
         return workspace.info()
 
     @server.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=False))

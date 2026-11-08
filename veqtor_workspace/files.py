@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Optional safe saving for model-written Python, without another MCP tool."""
+
+import os
+import tempfile
+from contextlib import contextmanager
+from pathlib import Path
+
+
+@contextmanager
+def atomic_save(destination: str | Path):
+    """Write and validate the yielded temporary path, then replace the destination.
+
+    An exception or interruption before replacement leaves the destination intact.
+    This does not validate content or protect writes that bypass this helper. A
+    forcibly stopped process can leave a hidden temporary file, not a partial result.
+    """
+    target = Path(destination)
+    fd, name = tempfile.mkstemp(prefix=f".{target.stem}-", suffix=target.suffix, dir=target.parent)
+    os.close(fd)
+    temporary = Path(name)
+    try:
+        yield temporary
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)

@@ -18,7 +18,8 @@ def test_package_contents_and_launch_command(tmp_path):
         names = set(archive.namelist())
         manifest = json.loads(archive.read("manifest.json"))
     assert {"manifest.json", "pyproject.toml", "uv.lock", "veqtor_workspace/server.py",
-            "veqtor_workspace/checks.py", "veqtor_workspace/runner.py", "veqtor_workspace/RECIPE.md"} <= names
+            "veqtor_workspace/checks.py", "veqtor_workspace/runner.py", "veqtor_workspace/RECIPE.md",
+            "veqtor_workspace/files.py", "LICENSE"} <= names
     assert not any(n.startswith(("tests/", ".venv/")) or "__pycache__" in n for n in names)
     args = manifest["server"]["mcp_config"]["args"]
     assert args[:6] == ["run", "--frozen", "--no-dev", "--directory", "${__dirname}", "veqtor-workspace"]

@@ -20,7 +20,8 @@ runtime with the required libraries. `uv run` provisions the default environment
 No existing Veqtor installation or client configuration is changed by this prototype.
 
 Ask the model to read `workspace_info`, inspect a copy, edit it with genuine tracked
-changes, then check and review the output. See [the short recipe](veqtor_workspace/RECIPE.md).
+changes, then check and review the output. Its reply includes [the editing recipe](veqtor_workspace/RECIPE.md)
+as `recipe_text`; a separate file-reading call is unnecessary.
 
 ## Scope
 
@@ -29,11 +30,21 @@ changes, then check and review the output. See [the short recipe](veqtor_workspa
   The runner does not inherit account credentials or the user's HOME environment.
 - `inputs/` copies are read-only for task code. An existing file in `work/` can be edited
   in place when requested. A prompt cannot override filesystem restrictions.
+- Save through `veqtor_workspace.files.atomic_save`: write and validate its temporary
+  path before leaving the context. Only successful completion replaces the destination;
+  a failed write leaves the old file intact. This is a small optional Python helper,
+  not another MCP tool or an interceptor of arbitrary writes. A killed process may leave
+  a hidden temporary file. The helper does not validate document content itself.
+- The protected baseline should be the version before the current task. After manual
+  Word edits between tasks, make a new protected snapshot of that saved version rather
+  than comparing the new task with an older original. The checker cannot reliably tell
+  human changes from model changes with the same author. It does not manage snapshots.
 - Edits should mark only the text that actually changes, leaving identical surrounding
   text outside Track Changes. Explicit requests to accept/reject revisions or edit/delete
   comments are allowed; the conservative preservation checker needs interpretation for them.
 - Python processes start fresh; files persist. Calls run sequentially, up to 120 seconds.
-  Each written file is limited to 8 MB. Output replies are bounded; full logs and
+  Each written file is limited to 8 MiB; this does not cap input file size or the total
+  size of a folder. Read large collections in batches. Output replies are bounded; full logs and
   scripts remain in `.runs/` and are read-only to task code.
 - The checker undoes the new tracked changes and new comments and compares the whole
   document with the original, so untracked text, formatting, paragraph, table and
@@ -57,8 +68,10 @@ changes, then check and review the output. See [the short recipe](veqtor_workspa
 - This is a single-user development experiment, not a reviewed execution-security
   product. Test the concrete access restrictions on the target machine.
 
-The code executor is format-independent. This pilot exercises DOCX only; other
-formats can use the same runner but need appropriate libraries and task checks.
+The code executor is format-independent. DOCX editing and text-PDF reading are tested.
+`pypdf` is included so both clients can extract text from supporting PDFs in the workspace.
+Image-only PDFs need OCR; OCR, PDF visual review and other Office-format libraries/checks
+are not bundled. A custom `--python` runtime may provide additional libraries.
 
 ## Optional preview setup
 

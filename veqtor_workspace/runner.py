@@ -51,11 +51,12 @@ class Workspace:
 
     def info(self) -> dict:
         return {
-            "prototype": "0.0.3", "author": self.author,
+            "prototype": "0.0.4", "author": self.author,
             "cwd": str(self.root), "python": str(self.python),
             "inputs": sorted(str(p.relative_to(self.root)) for p in (self.root / "inputs").rglob("*") if p.is_file()),
             "outputs": self.outputs(),
             "recipe": str(self.package / "veqtor_workspace/RECIPE.md"),
+            "recipe_text": (self.package / "veqtor_workspace/RECIPE.md").read_text(encoding="utf-8"),
             "execution": "Fresh Python process per call; files persist. Inputs read-only, work writable, no network.",
             "limits": {"timeout_seconds": 120, "bytes_per_written_file": 8_388_608, "reply_bytes_per_stream": MAX_REPLY},
             "preview": {"configured": (self.root / ".preview.json").is_file(),

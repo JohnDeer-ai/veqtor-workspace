@@ -87,6 +87,12 @@ def test_mcp_stdio_end_to_end(workspace, mode):
             catalog = await client.list_tools()
             tools = catalog.tools if hasattr(catalog, "tools") else catalog
             assert {t.name for t in tools} == {"workspace_info", "run_python", "check_docx"}
+            info = await client.call_tool("workspace_info", {})
+            info_data = json.loads(info.content[0].text)
+            if "result" in info_data:
+                info_data = info_data["result"]
+            assert info_data["recipe_text"] == Path(info_data["recipe"]).read_text(encoding="utf-8")
+            assert "atomic_save" in info_data["recipe_text"]
             result = await client.call_tool("run_python", {"code": "print('through MCP')"})
             data = result.structured_content
             if not isinstance(data, dict):
@@ -95,3 +101,88 @@ def test_mcp_stdio_end_to_end(workspace, mode):
                 data = data["result"]
             assert data["stdout"] == "through MCP\n", data
     asyncio.run(exercise())
+
+
+def test_atomic_save_replaces_only_after_success(workspace):
+    target = workspace.root / "work/договор с пробелами.docx"
+    target.write_bytes(b"previous complete file")
+    result = workspace.run('''
+from pathlib import Path
+from veqtor_workspace.files import atomic_save
+target = Path("work/договор с пробелами.docx")
+with atomic_save(target) as draft:
+    assert draft.suffix == ".docx"
+    draft.write_bytes(b"checked new file")
+    assert target.read_bytes() == b"previous complete file"
+    assert draft.read_bytes() == b"checked new file"
+assert not draft.exists()
+''')
+    assert result["exit_code"] == 0, result
+    assert target.read_bytes() == b"checked new file"
+
+
+@pytest.mark.parametrize("failure", ["validation", "size_limit", "timeout"])
+def test_atomic_save_keeps_previous_file_on_failure(workspace, failure):
+    target = workspace.root / "work/result.docx"
+    target.write_bytes(b"previous complete file")
+    action = {
+        "validation": "draft.write_bytes(b'bad result'); raise ValueError('validation failed')",
+        "size_limit": "draft.write_bytes(b'x' * (9 * 1024 * 1024))",
+        "timeout": "draft.write_bytes(b'unfinished result'); import time; time.sleep(10)",
+    }[failure]
+    result = workspace.run(
+        "from veqtor_workspace.files import atomic_save\n"
+        "with atomic_save('work/result.docx') as draft:\n"
+        f"    {action}\n", timeout_seconds=1 if failure == "timeout" else 30)
+    assert result["exit_code"] != 0, result
+    assert result["timed_out"] == (failure == "timeout")
+    assert target.read_bytes() == b"previous complete file"
+    if failure != "timeout":
+        assert not list(target.parent.glob(".result-*.docx"))
+
+
+def test_read_pdf_collection_and_docx_including_input_over_write_limit(workspace):
+    from hashlib import sha256
+
+    from docx import Document
+    from pypdf import PdfWriter
+    from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
+
+    sources = workspace.root / "inputs/references"
+    sources.mkdir()
+    for number in range(12):
+        writer = PdfWriter()
+        page = writer.add_blank_page(width=300, height=150)
+        font = DictionaryObject({NameObject("/Type"): NameObject("/Font"),
+                                 NameObject("/Subtype"): NameObject("/Type1"),
+                                 NameObject("/BaseFont"): NameObject("/Helvetica")})
+        page[NameObject("/Resources")] = DictionaryObject({
+            NameObject("/Font"): DictionaryObject({NameObject("/F1"): font})})
+        content = DecodedStreamObject()
+        content.set_data(f"BT /F1 12 Tf 20 80 Td (Reference {number}: payment evidence) Tj ET".encode())
+        page[NameObject("/Contents")] = content
+        if number == 0:
+            writer.add_metadata({"/Subject": "x" * (9 * 1024 * 1024)})
+        writer.write(sources / f"reference-{number:02}.pdf")
+    doc = Document()
+    doc.add_paragraph("Supporting Word appendix")
+    doc.save(sources / "appendix.docx")
+    before = {p.name: sha256(p.read_bytes()).hexdigest() for p in sources.iterdir()}
+    assert (sources / "reference-00.pdf").stat().st_size > 8_388_608
+    result = workspace.run('''
+from pathlib import Path
+from pypdf import PdfReader
+from docx import Document
+import json
+folder = Path("inputs/references")
+texts = {p.name: "".join(page.extract_text() for page in PdfReader(p).pages)
+         for p in sorted(folder.glob("*.pdf"))}
+print(json.dumps({"pdfs": texts, "word": Document(folder / "appendix.docx").paragraphs[0].text}))
+''')
+    assert result["exit_code"] == 0, result
+    data = json.loads(result["stdout"])
+    assert len(data["pdfs"]) == 12
+    for number in range(12):
+        assert f"Reference {number}: payment evidence" in data["pdfs"][f"reference-{number:02}.pdf"]
+    assert data["word"] == "Supporting Word appendix"
+    assert before == {p.name: sha256(p.read_bytes()).hexdigest() for p in sources.iterdir()}

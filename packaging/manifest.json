@@ -3,7 +3,7 @@
   "manifest_version": "0.4",
   "name": "veqtor-workspace-pilot",
   "display_name": "Veqtor Workspace (pilot)",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "description": "Pilot: Claude writes its own Python for copies of selected Word files; a checker reports what changed.",
   "long_description": "Experimental. Put copies of the documents into the inputs/ folder of the pilot workspace. Claude inspects and edits them with its own Python code under a macOS sandbox: inputs/ is read-only, results are saved in work/, there is no network. check_docx undoes the new tracked changes and comments, compares the result with the original and reports defects, compatibility warnings and checks it did not perform. It does not certify legal wording, layout or fields.",
   "author": {
