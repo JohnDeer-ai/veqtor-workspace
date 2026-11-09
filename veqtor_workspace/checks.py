@@ -18,6 +18,8 @@ from zipfile import BadZipFile, ZipFile
 
 from lxml import etree as ET
 
+from veqtor_workspace.text_edits import TOKEN
+
 W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 W14 = "{http://schemas.microsoft.com/office/word/2010/wordml}"
 W15 = "{http://schemas.microsoft.com/office/word/2012/wordml}"
@@ -61,7 +63,7 @@ PROPERTIES = _w("rPr", "pPr", "tcPr", "trPr", "tblPr", "tblPrEx", "sectPr")
 RUN_WRAPPERS = TEXT_REVISIONS | _w("hyperlink", "smartTag", "customXml", "sdt", "sdtContent", "fldSimple", "dir", "bdo")
 TEXT = _w("t", "delText", "instrText", "delInstrText")
 LOCATED = (W + "p", W + "tblPr", W + "tblGrid", W + "trPr", W + "tcPr", W + "tblPrEx", W + "sectPr")
-FINDINGS = ("authors", "dates", "ids", "structure", "placement", "existing", "untracked", "not_undone")
+FINDINGS = ("authors", "dates", "ids", "structure", "placement", "existing", "untracked", "not_undone", "quality")
 
 
 class CheckLimit(Exception):
@@ -324,6 +326,59 @@ def _differences(original, restored, limit=8):
 
 # ---------------------------------------------------------------- per part checks
 
+def _redline_quality(root, new, part):
+    """Advisory only: equal edges of adjacent NEW, plain-text replacements.
+
+    Never merge/repair XML. Nested history, moves, fields, formatting changes and
+    large groups are outside this narrow observation; no finding is not approval.
+    """
+    def tokens(nodes):
+        pieces, styles = [], []
+        for node in nodes:
+            for run in node:
+                if run.tag != W + "r" or any(c.tag not in _w("rPr", "t", "delText") for c in run):
+                    return None
+                props = run.find(W + "rPr")
+                if props is not None and any(e.tag in REVISION_TAGS for e in props.iter()):
+                    return None
+                style = _sig(props) if props is not None and _kept(props, LAYOUT_IDS) else None
+                text = "".join(_text(c) for c in run if c.tag in _w("t", "delText"))
+                pieces.append(text)
+                styles.extend([style] * len(text))
+                if len(styles) > 20_000:
+                    return None
+        text = "".join(pieces)
+        return [(m.group(), tuple(styles[m.start():m.end()])) for m in TOKEN.finditer(text)]
+
+    findings = []
+    for number, paragraph in enumerate(root.iter(W + "p"), 1):
+        group = []
+        for node in [*paragraph, None]:
+            if (node is not None and node.tag in _w("ins", "del") and _key(node) in new
+                    and not any(e.tag in TEXT_REVISIONS for e in paragraph.iterancestors())):
+                group.append(node)
+                continue
+            left = tokens([e for e in group if e.tag == W + "del"])
+            right = tokens([e for e in group if e.tag == W + "ins"])
+            if left and right:
+                prefix = 0
+                while prefix < min(len(left), len(right)) and left[prefix] == right[prefix]:
+                    prefix += 1
+                suffix = 0
+                while suffix < min(len(left), len(right)) - prefix and left[-suffix-1] == right[-suffix-1]:
+                    suffix += 1
+                first = "".join(t[0] for t in left[:prefix])
+                last = "".join(t[0] for t in left[len(left)-suffix:]) if suffix else ""
+                if any(c.isalnum() for c in first + last):
+                    findings.append({"part": part, "paragraph": number,
+                                     "revision_ids": [e.get(W + "id") for e in group],
+                                     "unchanged_prefix": first[:250], "unchanged_suffix": last[:250],
+                                     "issue": "Equal text with identical run properties was deleted and reinserted. "
+                                              "Review a narrower edit; deliberate moves or rewrites may be valid."})
+            group = []
+    return findings
+
+
 def _story(part, a, b, author, new_comment_ids):
     found = {name: [] for name in FINDINGS}
     old_keys = {_key(e) for e in a.iter(*REVISION_TAGS)}
@@ -366,6 +421,7 @@ def _story(part, a, b, author, new_comment_ids):
             if any(t.text and next(t.iterancestors(*TEXT_REVISIONS)) is e for t in e.iter(*wrong)):
                 found["structure"].append({**where, "issue": "inserted text must use w:t" if e.tag == W + "ins"
                                            else "deleted text must use w:delText"})
+    found["quality"] = _redline_quality(b, new, part)
     restored, problems = _undo(b, new, new_comment_ids)
     found["not_undone"] = [{"part": part, **p} for p in problems]
     old_text, old_marks, old_formatting = _history(a)
@@ -510,6 +566,12 @@ def check_docx(original: Path, candidate: Path, author: str) -> dict:
                 "inside them. Word 16.95 opens the tested forms (an insertion inside another author's insertion, "
                 "a deletion inside a deletion) and accepts or rejects them as expected. Other editors and "
                 "checkers were not tested."}, "warning")
+    add("redline_quality", not totals["quality"], {
+        "findings": totals["quality"][:20], "count": len(totals["quality"]),
+        "scope": "Advisory comparison of equal word edges in adjacent new plain-text revisions, "
+                 "with identical run properties, up to 20,000 characters per side. "
+                 "Not a complete minimality check; nested history, moves, fields and complex formatting are skipped. "
+                 "No document changes or save blocking."}, "warning")
     add("existing_revisions_preserved", not totals["existing"], {
         "changed_or_removed": totals["existing"][:20], "count": len(totals["existing"]),
         "split_pieces_of_existing_revisions": split,

@@ -15,6 +15,7 @@ from pathlib import Path
 
 MAX_REPLY = 12_000
 DEFAULT_CALL_SECONDS = 270
+DEFAULT_STATE = Path.home() / "Library/Application Support/Veqtor Workspace"
 
 
 def _quoted(path: Path) -> str:
@@ -23,7 +24,8 @@ def _quoted(path: Path) -> str:
 
 class Workspace:
     def __init__(self, root: Path, python: Path, author: str, project: Path | None = None,
-                 call_timeout_seconds: float = DEFAULT_CALL_SECONDS, managed_process_group: bool = False):
+                 call_timeout_seconds: float = DEFAULT_CALL_SECONDS, managed_process_group: bool = False,
+                 dynamic: bool = False, read_paths: list[str] | None = None, preview_config: Path | None = None):
         if platform.system() != "Darwin" or not Path("/usr/bin/sandbox-exec").exists():
             raise RuntimeError("This prototype requires macOS sandbox-exec; no unrestricted fallback.")
         self.root = root.expanduser().resolve()
@@ -37,6 +39,10 @@ class Workspace:
             raise ValueError("The connection's call timeout must be positive and finite.")
         self.call_timeout_seconds = call_timeout_seconds
         self.managed_process_group = managed_process_group
+        self.dynamic = dynamic
+        self.read_paths = self.resolve_reads(read_paths or [])
+        self.preview_config = (preview_config or (self.root / ".preview.json" if
+                               (self.root / ".preview.json").is_file() else DEFAULT_STATE / "preview.json")).expanduser().resolve()
         self.author = author.strip()
         if not self.author:
             raise ValueError("A tracked-change author is required.")
@@ -55,6 +61,26 @@ class Workspace:
         )
         self.runtime_roots = [Path(p).resolve() for p in json.loads(info)]
 
+    @property
+    def script_timeout_seconds(self) -> float:
+        return self.call_timeout_seconds - min(15, self.call_timeout_seconds / 10)
+
+    def resolve_reads(self, paths: list[str]) -> list[Path]:
+        result = []
+        for name in paths:
+            path = Path(name).expanduser()
+            if not path.is_absolute():
+                raise ValueError("Use absolute file or folder paths from the user's task.")
+            path = path.resolve(strict=True)
+            if not (path.is_file() or path.is_dir()):
+                raise ValueError("Read paths must be regular files or directories.")
+            if not self.dynamic and not (path.is_relative_to(self.root) or
+                                          (self.project and path.is_relative_to(self.project))):
+                raise ValueError("This legacy connection is folder-bound; launch without --project/--workspace for path mode.")
+            if path not in result:
+                result.append(path)
+        return result
+
     def path(self, relative: str, area: str) -> Path:
         path = (self.root / relative).resolve()
         if not path.is_relative_to(self.root / area):
@@ -63,7 +89,9 @@ class Workspace:
 
     def info(self) -> dict:
         return {
-            "prototype": "0.0.6", "author": self.author,
+            "prototype": "0.0.7", "author": self.author,
+            "access_mode": "paths" if self.dynamic else "legacy_folder",
+            "read_paths": [str(p) for p in self.read_paths],
             "project_folder": str(self.project) if self.project else None,
             "cwd": str(self.root), "python": str(self.python),
             "inputs": sorted(str(p.relative_to(self.root)) for p in (self.root / "inputs").rglob("*") if p.is_file()),
@@ -72,11 +100,11 @@ class Workspace:
             "recipe_text": (self.package / "veqtor_workspace/RECIPE.md").read_text(encoding="utf-8"),
             "execution": "Fresh Python process per call; files persist. Project and inputs read-only, work writable, no network. "
                          "For in-place editing use document_task(start), run_python/check_docx with task_id, then document_task(save).",
-            "limits": {"default_timeout_seconds": self.call_timeout_seconds,
+            "limits": {"default_timeout_seconds": self.script_timeout_seconds,
                        "max_timeout_seconds": self.call_timeout_seconds,
                        "scope": "Whole MCP call, including setup, checks and saving; no disabled deadline or queue.",
                        "bytes_per_written_file": None, "reply_bytes_per_stream": MAX_REPLY},
-            "preview": {"configured": (self.root / ".preview.json").is_file(),
+            "preview": {"configured": self.preview_config.is_file(), "config": str(self.preview_config),
                         "usage": "check_docx(render=True); reuse preview_id with preview_pages for more pages",
                         "default_timeout_seconds": min(60, self.call_timeout_seconds),
                         "max_timeout_seconds": self.call_timeout_seconds, "max_images_per_reply": 3},
@@ -95,6 +123,7 @@ class Workspace:
         if self.project:
             read.append(self.project)
         paths = " ".join(f"(subpath {_quoted(p)})" for p in read)
+        paths += " " + " ".join(f"({'subpath' if p.is_dir() else 'literal'} {_quoted(p)})" for p in self.read_paths)
         return f'''(version 1)
 (deny default)
 (allow process-fork process-exec sysctl-read)
@@ -109,7 +138,7 @@ class Workspace:
     def run(self, code: str, timeout_seconds: float | None = None) -> dict:
         if not isinstance(code, str) or not code.strip() or len(code) > 100_000:
             raise ValueError("Code must contain 1–100,000 characters.")
-        timeout_seconds = self.call_timeout_seconds if timeout_seconds is None else timeout_seconds
+        timeout_seconds = self.script_timeout_seconds if timeout_seconds is None else timeout_seconds
         if not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= self.call_timeout_seconds:
             raise ValueError(f"timeout_seconds must be positive and at most {self.call_timeout_seconds}; no unlimited calls.")
         if not self.lock.acquire(blocking=False):
@@ -134,7 +163,7 @@ class Workspace:
         timed_out = False
         with stem.with_suffix(".stdout").open("wb") as out, stem.with_suffix(".stderr").open("wb") as err:
             process = subprocess.Popen(
-                ["/usr/bin/sandbox-exec", "-p", self.profile(), str(self.python), "-B", "-c", bootstrap],
+                ["/usr/bin/sandbox-exec", "-p", self.profile(), str(self.python), "-u", "-B", "-c", bootstrap],
                 cwd=self.root, env=env, stdin=subprocess.DEVNULL, stdout=out, stderr=err,
                 start_new_session=not self.managed_process_group,
             )

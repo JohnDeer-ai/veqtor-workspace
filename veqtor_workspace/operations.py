@@ -32,6 +32,8 @@ class Operations:
             payload = {"root": str(w.root), "python": str(w.python), "author": w.author,
                        "project": str(w.project) if w.project else None,
                        "call_timeout_seconds": w.call_timeout_seconds,
+                       "dynamic": w.dynamic, "read_paths": [str(p) for p in w.read_paths],
+                       "preview_config": str(w.preview_config),
                        "operation": operation, "arguments": arguments}
             with anyio.fail_after(w.call_timeout_seconds):
                 # Assign the child before accepting cancellation, so cleanup always knows its pid.
@@ -64,7 +66,12 @@ class Operations:
                         except ProcessLookupError:
                             pass
                         process.stdin.close()
-                        await process.wait()
+                        # Cancellation has stopped the original readers. Drain the pipes
+                        # before wait(), otherwise a full StreamReader can keep wait stuck
+                        # even after SIGKILL. Cleanup has its own bounded shield.
+                        with anyio.move_on_after(2):
+                            await asyncio.gather(process.stdout.read(), process.stderr.read())
+                            await process.wait()
             finally:
                 w.lock.release()
 
@@ -76,13 +83,16 @@ def perform(w: Workspace, operation: str, args: dict) -> dict:
     if operation == "document_task":
         action, file, task_id = args["action"], args.get("file"), args.get("task_id")
         if action == "start" and file and task_id is None:
-            return tasks.start(file)
+            return tasks.start(file, args.get("read_paths"))
         if action in ("save", "status") and task_id and file is None:
+            if args.get("read_paths"):
+                raise ValueError("read_paths belongs to start or run_python, not save/status.")
             return tasks.save(task_id) if action == "save" else tasks.status(task_id)
         raise ValueError("Use start with file, or save/status with task_id.")
     if operation == "run_python":
         task_id = args.pop("task_id", None)
         context = tasks.context(task_id, writing=True)[0] if task_id else w
+        context.read_paths = context.resolve_reads([str(p) for p in context.read_paths] + (args.pop("read_paths", None) or []))
         return context.run(**args)
     if operation != "check_docx":
         raise ValueError("Unknown operation.")
@@ -109,7 +119,7 @@ def perform(w: Workspace, operation: str, args: dict) -> dict:
     if render or preview_id:
         preview_root = w.root / ".runs/previews"
         preview = (read_preview(preview_root, preview_id, source, target) if preview_id else
-                   render_pair(source, target, preview_root, w.root / ".preview.json", seconds,
+                   render_pair(source, target, preview_root, w.preview_config, seconds,
                                managed_process_group=w.managed_process_group))
         result["preview"] = select_pages(preview, pages, args["preview_side"])
         images = [base64.b64encode(Path(p).read_bytes()).decode() for p in result["preview"]["images"]]
@@ -128,7 +138,9 @@ def main():
     try:
         w = Workspace(Path(payload["root"]), Path(payload["python"]), payload["author"],
                       Path(payload["project"]) if payload["project"] else None,
-                      payload["call_timeout_seconds"], managed_process_group=True)
+                      payload["call_timeout_seconds"], managed_process_group=True,
+                      dynamic=payload.get("dynamic", False), read_paths=payload.get("read_paths"),
+                      preview_config=Path(payload["preview_config"]) if payload.get("preview_config") else None)
         reply = {"result": perform(w, payload["operation"], payload["arguments"])}
     except Exception as exc:  # noqa: BLE001 - serialize worker failures across the process boundary
         reply = {"error": f"{type(exc).__name__}: {exc}"}

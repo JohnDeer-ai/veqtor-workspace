@@ -3,9 +3,9 @@
   "manifest_version": "0.4",
   "name": "veqtor-workspace-pilot",
   "display_name": "Veqtor Workspace (pilot)",
-  "version": "0.0.6",
-  "description": "Pilot: edit project documents with model-written Python, automatic task snapshots and a DOCX check.",
-  "long_description": "Select the folder containing your documents. Each editing task snapshots the latest saved file under a hidden .veqtor/ folder, edits a private copy and saves back to the same path after checking for conflicting changes. Python can read the project and write only task copies; no network. check_docx reports preservation findings and checks not performed. It does not certify legal wording, layout or native Word behavior. Save Word changes before starting a task.",
+  "version": "0.0.7",
+  "description": "Edit selected local documents by absolute path with model-written Python, snapshots and DOCX checks.",
+  "long_description": "Give the model the file or folder paths in your request. No document folder setting is required. Each editing task snapshots the latest saved file in private application state, edits a copy and saves to the original path after a conflict check. Python reads only selected paths and writes task copies; no network. DOCX checks include preservation and advisory redline quality. Save Word changes before starting.",
   "author": {
     "name": "Ilya Shilov",
     "url": "https://veqtor.pro"
@@ -23,8 +23,6 @@
         "--directory",
         "${__dirname}",
         "veqtor-workspace",
-        "--project",
-        "${user_config.workspace}",
         "--author",
         "${user_config.author}"
       ],
@@ -34,12 +32,6 @@
     }
   },
   "user_config": {
-    "workspace": {
-      "type": "directory",
-      "title": "Document project folder",
-      "description": "Folder containing the actual documents. Task snapshots stay in its hidden .veqtor/ subfolder. When updating from 0.0.4, select the document folder here.",
-      "required": true
-    },
     "author": {
       "type": "string",
       "title": "Tracked-change author",

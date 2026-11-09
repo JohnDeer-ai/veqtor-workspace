@@ -8,6 +8,7 @@ import sys
 import time
 from pathlib import Path
 
+import anyio
 import pytest
 from mcp import StdioServerParameters
 from mcp.client import Client
@@ -234,3 +235,96 @@ asyncio.run(Operations(w).call('run_python', {{'code':{code!r},'task_id':{task['
         if process.poll() is None:
             process.kill()
             process.wait()
+
+
+@pytest.mark.parametrize("stream", ["stdout", "stderr"])
+def test_cancel_large_reply_frees_connection(project, monkeypatch, stream):
+    """The real readers used to stop draining, leaving wait() and the mutex stuck."""
+    w, _, _, _, _ = prepared(project)
+    w.call_timeout_seconds = .6
+    marker = w.root / "writing-large-reply"
+    spawn = asyncio.create_subprocess_exec
+    children = []
+    reading = asyncio.Event()
+
+    async def injected(*args, **kwargs):
+        code = ("import os,sys,json;from pathlib import Path;"
+                "json.loads(sys.stdin.buffer.readline());data=b'x'*(20*1024*1024);"
+                f"Path({str(marker)!r}).touch();os.write({1 if stream == 'stdout' else 2},data)")
+        process = await spawn(sys.executable, "-c", code, **kwargs)
+        pipe = getattr(process, stream)
+        read = pipe.read
+        first = True
+
+        async def slow_reader(n=-1):
+            nonlocal first
+            if first:
+                first = False
+                head = await read(1)
+                reading.set()
+                await asyncio.sleep(.2)  # backpressure while a large reply is in flight
+                return head + await read(n)
+            return await read(n)
+
+        pipe.read = slow_reader
+        children.append(process)
+        return process
+
+    async def exercise():
+        scopes = []
+
+        async def call():
+            with anyio.CancelScope() as scope:
+                scopes.append(scope)
+                await Operations(w).call("workspace_info", {})
+
+        with monkeypatch.context() as patch:
+            patch.setattr(asyncio, "create_subprocess_exec", injected)
+            request = asyncio.create_task(call())
+            try:
+                await asyncio.wait_for(reading.wait(), 3)
+                await asyncio.sleep(.01)
+                scopes[0].cancel()
+                await asyncio.sleep(.9)
+                assert request.done() and not w.lock.locked()
+                assert children[0].returncode == -9
+            finally:
+                if not request.done():
+                    await asyncio.gather(children[0].stdout.read(), children[0].stderr.read())
+                await request
+        response = await Operations(w).call("workspace_info", {})
+        assert response["prototype"] == "0.0.7"
+    asyncio.run(exercise())
+
+
+def test_inner_timeout_keeps_unbuffered_progress(project):
+    w, _, _, _, _ = prepared(project)
+    w.call_timeout_seconds = 2
+
+    async def exercise():
+        result = await Operations(w).call("run_python", {
+            "code": "import time;print('progress before sleep');time.sleep(5)", "timeout_seconds": .3})
+        assert result["timed_out"] and result["stdout"] == "progress before sleep\n", result
+        assert not w.lock.locked()
+    asyncio.run(exercise())
+
+
+def test_old_running_server_can_start_new_worker_until_reconnect(project):
+    w, _, _, _, _ = prepared(project)
+    payload = {"root": str(w.root), "python": str(w.python), "author": w.author,
+               "project": str(w.project), "call_timeout_seconds": 270,
+               "operation": "workspace_info", "arguments": {}}
+    # Keep stdin open, matching the old supervisor's parent-liveness pipe.
+    process = subprocess.Popen([sys.executable, "-m", "veqtor_workspace.operations"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+    try:
+        process.stdin.write(json.dumps(payload).encode()+b"\n")
+        process.stdin.flush()
+        response = json.loads(process.stdout.readline())
+        assert response["result"]["access_mode"] == "legacy_folder"
+        assert process.wait(timeout=3) == 0
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.stdin.close()
+        process.wait(timeout=3)

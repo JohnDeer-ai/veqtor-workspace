@@ -26,9 +26,10 @@ class DocumentTasks:
         self.workspace = workspace
         self.directory = workspace.root / ".runs/documents"
 
-    def _context(self, folder: Path) -> Workspace:
+    def _context(self, folder: Path, read_paths: list[str] | None = None) -> Workspace:
         w = self.workspace
-        return Workspace(folder, w.python, w.author, w.project, w.call_timeout_seconds, w.managed_process_group)
+        return Workspace(folder, w.python, w.author, w.project, w.call_timeout_seconds, w.managed_process_group,
+                         w.dynamic, read_paths, w.preview_config)
 
     @staticmethod
     def _record(folder: Path, data: dict):
@@ -37,19 +38,23 @@ class DocumentTasks:
 
     def source(self, file: str) -> Path:
         project = self.workspace.project
-        if project is None:
+        if project is None and not self.workspace.dynamic:
             raise ValueError("Choose the document folder with --project to edit files in place.")
-        path = (project / file).resolve(strict=True)
-        if (not path.is_relative_to(project) or path.is_relative_to(self.workspace.root)
+        selected = Path(file).expanduser()
+        if self.workspace.dynamic and not selected.is_absolute():
+            raise ValueError("Select the document by its absolute path.")
+        path = (project / selected if project else selected).resolve(strict=True)
+        if ((project and not path.is_relative_to(project)) or path.is_relative_to(self.workspace.root)
                 or not path.is_file()):
             raise ValueError("Select a regular document inside the project folder, outside its private state.")
         return path
 
-    def start(self, file: str) -> dict:
+    def start(self, file: str, read_paths: list[str] | None = None) -> dict:
         source = self.source(file)
+        reads = [str(p) for p in self.workspace.resolve_reads([str(source), *(read_paths or [])])]
         task_id = uuid.uuid4().hex[:12]
         folder = self.directory / task_id
-        child = self._context(folder)
+        child = self._context(folder, reads)
         original, candidate = f"inputs/{source.name}", f"work/{source.name}"
         try:
             shutil.copyfile(source, folder / original)
@@ -58,7 +63,7 @@ class DocumentTasks:
                 raise ValueError("The file changed while taking its snapshot. Start again from the saved version.")
             shutil.copyfile(folder / original, folder / candidate)
             data = {"task_id": task_id, "file": str(source), "original": original,
-                    "candidate": candidate, "original_sha256": original_hash, "saved": False}
+                    "candidate": candidate, "original_sha256": original_hash, "saved": False, "read_paths": reads}
             (folder / "task.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
         except BaseException:
             shutil.rmtree(folder)
@@ -86,7 +91,7 @@ class DocumentTasks:
         data, folder = self.read(task_id)
         if writing and (data["saved"] or data.get("save_sha256")):
             raise ValueError("Saving has started for this task. Inspect its status. Start a new task before further edits.")
-        return self._context(folder), data
+        return self._context(folder, data.get("read_paths")), data
 
     def status(self, task_id: str) -> dict:
         data, _ = self.read(task_id)

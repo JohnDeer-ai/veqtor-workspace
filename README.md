@@ -6,12 +6,13 @@ writes Python for the selected documents. Four MCP tools: `workspace_info`,
 
 ## Try on macOS
 
-Select a document project folder outside the repository. Keep contracts and generated
-artifacts outside Git. Use a folder of copies for initial testing.
+Keep contracts and generated artifacts outside Git. Use copies for initial testing.
+The default connection has no document-folder setting: the model supplies absolute
+paths from each user request. macOS permissions still apply.
 
 ```sh
 uv run --project /absolute/path/to/veqtor-workspace veqtor-workspace \
-  --project /absolute/path/to/document-folder --author 'Your Name'
+  --author 'Your Name'
 ```
 
 Use that same command and arguments as a separate local stdio MCP entry in your
@@ -21,21 +22,24 @@ No existing Veqtor installation or client configuration is changed by this proto
 
 Ask the model to read `workspace_info`, edit the selected file with genuine tracked
 changes, check it and save it back. The server snapshots the latest saved version at
-`document_task(start)`, keeps the editable copy in hidden `.veqtor/` state and replaces
+`document_task(start, file="/absolute/path")`, keeps the editable copy in private state and replaces
 the selected file at `document_task(save)`. No manual copying into inputs/ is needed.
-The model starts one task per new user editing request, not per Python call; MCP itself
+Optional `read_paths` on start selects supporting files/folders. `run_python(read_paths=[...])`
+can read selected material without creating an editing task; additional grants last only
+that call. No shared current folder is switched. The model starts one task per new user editing request, not per Python call; MCP itself
 does not receive chat boundaries. `workspace_info` includes [the editing recipe](veqtor_workspace/RECIPE.md)
 as `recipe_text`; a separate file-reading call is unnecessary.
 
 ## Scope
 
 - macOS only. The Python process and children run under an OS sandbox: selected
-  project/runtime reads, writes inside task `work/`, no network. The server retains logs.
+  selected file/folder and runtime reads, writes inside task `work/`, no network. The server retains logs.
   The runner does not inherit account credentials or the user's HOME environment.
-- Project documents and `inputs/` snapshots are read-only for task code. The model edits
+- Selected documents and `inputs/` snapshots are read-only for task code. The model edits
   a hidden task copy; only `document_task(save)` publishes it to the selected path.
   This works for any file format; DOCX has an additional checker. A prompt cannot
-  override filesystem restrictions or grant access outside the selected project.
+  override macOS restrictions. In path mode the model selects the required read paths
+  and target file from user instructions; document contents do not authorize access.
 - Save through `veqtor_workspace.files.atomic_save`: write and validate its temporary
   path before leaving the context. Only successful completion replaces the destination;
   a failed write leaves the old file intact. This optional helper protects task-copy
@@ -54,18 +58,26 @@ as `recipe_text`; a separate file-reading call is unnecessary.
   other apps: do not edit the same file simultaneously while the model saves it.
   If Word stayed open during that save, reopen the file before continuing manual edits
   so a stale in-memory Word version cannot overwrite the model's result.
-  Snapshots remain in `.veqtor/.runs/documents/`; no background cleanup or version database.
-- `--workspace` still supports the old inputs/work copy workflow. It does not provide
-  automatic snapshots of external files. Existing client entries keep working until
-  changed to `--project`; the 0.0.5 Claude bundle uses project mode.
+  Snapshots remain in private application state (`~/Library/Application Support/Veqtor Workspace/`
+  by default, `.runs/documents/` below it); no background cleanup or version database.
+- Existing `--project` and `--workspace` launch arguments preserve their folder-bound
+  behavior. Remove them to use path mode. `--state-dir` changes private storage, not the
+  document scope; `--preview-config` overrides the shared renderer configuration.
+  Old snapshots remain where they were; start new tasks from the latest saved documents.
 - Edits should mark only the text that actually changes, leaving identical surrounding
   text outside Track Changes. Explicit requests to accept/reject revisions or edit/delete
   comments are allowed; the conservative preservation checker needs interpretation for them.
+  `veqtor_workspace.text_edits.minimal_edits(before, after)` plans word/number/punctuation
+  spans in original Python character offsets; the model maps these to the concrete XML.
+  It separates search context from actual change spans without adding an editing engine.
 - Python processes start fresh; files persist. One call runs at a time; busy calls
   fail immediately and are never queued. Every MCP call runs in a temporary process
   group with a 270-second ceiling, including checks, rendering, snapshots and saving.
   Received cancellation, server deadline and server-process death stop this group
-  and its ordinary children. This is a per-call worker, not a persistent job service.
+  and its ordinary children. Cancellation cleanup drains stdout/stderr after stopping
+  the group and has a separate two-second ceiling, avoiding a full-pipe wait deadlock. This is a per-call worker, not a persistent job service.
+  Python defaults to 255 seconds with immediate output flushing, leaving 15 seconds
+  for returning the result. Smaller configured ceilings reserve 10% (at most 15 seconds).
   The model may shorten the Python/preview timer but cannot disable it or exceed the
   connection ceiling. Set `--call-timeout-seconds` below the client's waiting limit,
   leaving time for cleanup and response delivery (for example 270 vs 330 seconds).
@@ -94,6 +106,10 @@ as `recipe_text`; a separate file-reading call is unnecessary.
   stale previews if either document changed. Inspect every relevant changed page; three
   images are not a complete review of a large edit. This does not certify layout or test
   native Word comments/accept/reject. The same rendering adapter is callable without MCP.
+- `redline_quality` is a non-blocking observation of unchanged word edges in adjacent
+  new plain-text deletions/insertions with identical run properties. It skips complex
+  history, moves, fields, formatting changes and groups over 20,000 characters per side;
+  it does not certify minimality or auto-rewrite the document. Review its named fragments.
 - Existing-revision/comment preservation is a conservative baseline. Intentional
   acceptance, rejection or deletion requires interpretation of the report.
 - This is a single-user development experiment, not a reviewed execution-security
@@ -106,8 +122,10 @@ are not bundled. A custom `--python` runtime may provide additional libraries.
 
 ## Optional preview setup
 
-An administrator configures an already installed renderer once in the project's
-`.veqtor/.preview.json` (or `.preview.json` in a legacy workspace, outside writable `work/`):
+Configure an already installed renderer once for this Mac in
+`~/Library/Application Support/Veqtor Workspace/preview.json`, outside writable task
+folders. Every selected document uses it, including the Claude extension. An explicit
+`--preview-config` can select another config; legacy local `.preview.json` remains supported:
 
 ```json
 {"python": "/absolute/path/to/render-python", "script": "/absolute/path/to/render_docx.py"}
@@ -136,6 +154,6 @@ Run `uv run --group dev pytest` from this repository.
 Build with `uv run python packaging/build_mcpb.py --out dist` and install the resulting
 `.mcpb` extension. The extension keeps its existing `veqtor-workspace-pilot` identity so
 an update replaces the pilot instead of creating a second connection. On update from
-0.0.4, choose the folder of actual documents in extension settings (the stored setting
-key remains `workspace` for compatibility). Document workspaces
-and machine-specific preview configuration stay outside this repository.
+older versions, the saved document-folder preference is no longer used. The only
+user setting is the revision/comment author. Document paths come from each request.
+Private state and the shared renderer configuration stay outside this repository.
