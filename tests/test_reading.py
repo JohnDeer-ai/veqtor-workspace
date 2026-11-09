@@ -4,7 +4,7 @@
 import json
 
 import pytest
-from test_checks import NS, check, comments, docx, mark, para, rev, run
+from test_checks import NS, check, comments, docx, mark, math, para, rev, run
 
 from veqtor_workspace.reading import read_docx
 
@@ -129,15 +129,15 @@ def test_split_revision_ids_checked_independently_of_origin(tmp_path, ids, autho
     assert 'new_revision_ids' in failed
 
 
-def test_mixed_same_stamp_insertions_are_explicitly_unchecked(tmp_path):
+def test_mixed_same_stamp_insertions_require_exact_restoration(tmp_path):
     old = [para(rev('ins', '1', 'Ilya', run('A B'))), para(run('Untouched'))]
     mixed = para(rev('ins', '1', 'Ilya', run('A ')), rev('ins', '2', 'Ilya', run('X ')),
                  rev('ins', '3', 'Ilya', run('B')))
     failed, report = check(tmp_path, old, [mixed, old[1]])
     assert not failed
-    assert {'existing_revisions_preserved', 'untracked_changes', 'revision_origins'} <= set(report['summary']['not_checked'])
+    assert report['summary']['not_checked'] == ['revision_origins', 'layout_and_legal_intent']
     origins = next(c['detail'] for c in report['checks'] if c['check'] == 'revision_origins')
-    assert origins[0]['paragraph'] == 1 and origins[0]['preservation_not_checked'] is True
+    assert origins[0]['ids'] == ['2']
     failed, report = check(tmp_path, old, [mixed, para(run('Unexpected change'))])
     assert 'untracked_changes' in failed
     # A missing part of the original is still a defect, even with identical timestamps.
@@ -151,6 +151,77 @@ def test_mixed_same_stamp_insertions_are_explicitly_unchecked(tmp_path):
     assert 'existing_revisions_preserved' in failed
 
 
+@pytest.mark.parametrize('damage', ['deletion', 'author', 'date', 'paragraph_mark', 'formula', 'anchor', 'plain_formatting'])
+def test_ambiguous_insertions_never_hide_other_same_paragraph_damage(tmp_path, damage):
+    original = rev('ins', '1', 'Ilya', run('A B'))
+    mixed = rev('ins', '1', 'Ilya', run('A ')) + rev('ins', '2', 'Ilya', run('X ')) + rev('ins', '3', 'Ilya', run('B'))
+    deleted = rev('del', '9', 'Other', run(' Z', 'delText'))
+    if damage in ('deletion', 'author', 'date'):
+        old = para(original, deleted)
+        changed = {'deletion': run(' Z'), 'author': deleted.replace('Other', 'Another reviewer'),
+                   'date': deleted.replace('2026-01-01', '2025-12-20')}[damage]
+        new = para(mixed, changed)
+    elif damage == 'paragraph_mark':
+        old, new = para(original, ppr=mark('del', '9', 'Other')), para(mixed)
+    elif damage == 'formula':
+        old, new = para(original, math('price = 100')), para(mixed)
+    elif damage == 'anchor':
+        old, new = para('<w:commentRangeStart w:id="0"/>', original, '<w:commentRangeEnd w:id="0"/>'), para(mixed)
+    else:
+        old, new = para(original, run('Kept', rpr='<w:rPr><w:b/></w:rPr>')), para(mixed, run('Kept'))
+    failed, report = check(tmp_path, [old], [new])
+    assert 'untracked_changes' in failed
+    if damage in ('deletion', 'author', 'date', 'paragraph_mark'):
+        assert 'existing_revisions_preserved' in failed
+    assert 'revision_origins' in report['summary']['not_checked']
+
+
+def test_several_same_stamp_insertions_are_verified_together(tmp_path):
+    old = [para(rev('ins', str(i), 'Ilya', run('A B'))) for i in (1, 4)]
+    new = [para(rev('ins', str(i), 'Ilya', run('A ')), rev('ins', str(i+1), 'Ilya', run('X ')),
+                rev('ins', str(i+2), 'Ilya', run('B'))) for i in (1, 4)]
+    failed, report = check(tmp_path, old, new)
+    assert not failed
+    assert report['summary']['not_checked'] == ['revision_origins', 'layout_and_legal_intent']
+
+
+@pytest.mark.parametrize('ids', [('5', '6'), ('6', '7')])
+def test_split_formatting_keeps_history_with_fresh_ids(tmp_path, ids):
+    def props(rid):
+        return '<w:rPr><w:b/>' + rev('rPrChange', rid, 'Other', '<w:rPr/>') + '</w:rPr>'
+    old = [para(run('AB', rpr=props('5')))]
+    new = [para(run('A', rpr=props(ids[0])), run('B', rpr=props(ids[1])))]
+    failed, report = check(tmp_path, old, new)
+    assert not failed and not report['summary']['warnings']
+    # Keeping one copy of a record must not hide its loss from another text span.
+    failed, _ = check(tmp_path, old, [para(run('A', rpr=props('5')), run('B', rpr='<w:rPr><w:b/></w:rPr>'))])
+    assert 'existing_revisions_preserved' in failed
+    for changed in [props('6').replace('Other', 'Changed author'), props('6').replace('2026-01-01', '2026-02-01'),
+                    props('6').replace('<w:rPr/>', '<w:rPr><w:i/></w:rPr>'), props('6').replace('<w:b/>', '<w:i/>')]:
+        failed, _ = check(tmp_path, old, [para(run('A', rpr=props('5')), run('B', rpr=changed))])
+        assert failed
+    failed, _ = check(tmp_path, [old[0], para(run('Unrelated', rpr='<w:rPr><w:b/></w:rPr>'))],
+                      [new[0], para(run('Unrelated', rpr=props('8')))])
+    assert 'existing_revisions_preserved' in failed and 'untracked_changes' in failed
+    # A record on an empty run is still history, even beside the same author's other records.
+    failed, _ = check(tmp_path, [para(run('A', rpr=props('5')), run('', rpr=props('9')))],
+                      [para(run('A', rpr=props('5')))])
+    assert 'existing_revisions_preserved' in failed
+
+
+def test_tracked_edit_can_split_old_formatting_but_not_reuse_ids(tmp_path):
+    def props(rid):
+        return '<w:rPr><w:b/>' + rev('rPrChange', rid, 'Other', '<w:rPr/>') + '</w:rPr>'
+    old = [para(run('AB', rpr=props('5')))]
+    new = [para(run('A', rpr=props('5')),
+                rev('del', '10', 'Ilya', run('B', 'delText', rpr=props('6')), date='2026-02-01T00:00:00Z'),
+                rev('ins', '11', 'Ilya', run('X', rpr=props('7')), date='2026-02-01T00:00:00Z'))]
+    failed, _ = check(tmp_path, old, new)
+    assert not failed
+    failed, _ = check(tmp_path, old, [new[0].replace('w:id="6"', 'w:id="5"')])
+    assert 'new_revision_ids' in failed
+
+
 def test_nested_table_in_deleted_outer_row_has_no_current_text(tmp_path):
     nested = '<w:tbl><w:tr><w:tc>' + para(run('Removed obligation')) + '</w:tc></w:tr></w:tbl>'
     table = ('<w:tbl><w:tr><w:trPr>' + rev('del', '7', 'Other') + '</w:trPr><w:tc>'
@@ -161,7 +232,7 @@ def test_nested_table_in_deleted_outer_row_has_no_current_text(tmp_path):
     assert any(x['type'] == 'revision' and x['id'] == '7' for x in items)
 
 
-@pytest.mark.parametrize('flag,expected', [('1', True), ('true', True), ('0', False), ('false', False)])
+@pytest.mark.parametrize('flag,expected', [('1', True), ('true', True), ('on', True), ('0', False), ('false', False), ('off', False)])
 def test_reply_chain_and_resolved_status(tmp_path, flag, expected):
     parts = comments(*[f'<w:comment w:id="{i}" w:author="A"><w:p w14:paraId="{pid}">'
                        f'{run(text)}</w:p></w:comment>' for i, pid, text in [

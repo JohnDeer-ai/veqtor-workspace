@@ -172,7 +172,7 @@ def _comments(roots, records):
             target = parents.get(target)
         anchor = anchors.get(target, {"paragraphs": [], "text": []})
         result.append({"type": "comment", "id": cid, "author": c.get(W + "author"), "date": c.get(W + "date"),
-                       "parent_comment_id": parent, "resolved": ex.get(W15 + "done") in ("1", "true") if ex is not None else None,
+                       "parent_comment_id": parent, "resolved": ex.get(W15 + "done") in ("1", "true", "on") if ex is not None else None,
                        "paragraphs": anchor["paragraphs"], "anchor_markup_excerpt": "".join(anchor["text"])[:240],
                        "anchor_status": "located" if anchor["paragraphs"] else "not_located",
                        "text": "\n".join(visible_text(p) for p in c.iter(W + "p"))})

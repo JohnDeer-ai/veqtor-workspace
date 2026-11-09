@@ -119,7 +119,7 @@ def _text(node):
 
 
 def _sig(node, drop=LAYOUT_IDS):
-    """Property order, run boundaries, layout ids and indentation do not matter; everything else does,
+    """Property order, run boundaries, revision/layout ids and indentation do not matter; everything else does,
     including the text of any element (formulas, embedded data) and paragraph ids that comments link to."""
     if node.tag == W + "p":
         props = tuple(_sig(c, drop) for c in node if c.tag == W + "pPr" and _kept(c, drop))
@@ -132,7 +132,22 @@ def _sig(node, drop=LAYOUT_IDS):
     kids = [(_sig(c, drop), "" if indent else c.tail or "") for c in node if _kept(c, drop)]
     if node.tag in PROPERTIES:
         kids.sort(key=repr)
-    return node.tag, _attrs(node, drop), "" if indent else node.text or "", tuple(kids)
+    # A split run needs a fresh formatting-revision id; its properties and coverage still count.
+    extra = (W + "id",) if node.tag == W + "rPrChange" else ()
+    return node.tag, _attrs(node, drop, extra), "" if indent else node.text or "", tuple(kids)
+
+
+def _run_tokens(run, context, drop):
+    props = run.find(W + "rPr")
+    style = _sig(props, drop) if props is not None and _kept(props, drop) else None
+    for item in run:
+        if not _kept(item, drop) or item.tag == W + "rPr":
+            continue
+        if item.tag in TEXT:
+            if _text(item):
+                yield context, style, item.tag, _text(item)
+        else:
+            yield context, style, None, _sig(item, drop)
 
 
 def _raw_tokens(container, drop):
@@ -143,16 +158,7 @@ def _raw_tokens(container, drop):
             if not _kept(child, drop) or child.tag == W + "pPr":
                 continue
             if child.tag == W + "r":
-                props = child.find(W + "rPr")
-                style = _sig(props, drop) if props is not None and _kept(props, drop) else None
-                for item in child:
-                    if not _kept(item, drop) or item.tag == W + "rPr":
-                        continue
-                    if item.tag in TEXT:
-                        if _text(item):  # a space Word drops is not text, a preserved one is
-                            tokens.append((context, style, item.tag, _text(item)))
-                    else:
-                        tokens.append((context, style, None, _sig(item, drop)))
+                tokens.extend(_run_tokens(child, context, drop))
             elif child.tag in RUN_WRAPPERS:
                 # Revision ids are bookkeeping: Word may split one revision into several.
                 extra = (W + "id",) if child.tag in TEXT_REVISIONS else ()
@@ -256,7 +262,7 @@ def _undo(root, new, new_comment_ids):
 
 def _history(root):
     """Existing revisions: text by kind/author/date (split-insensitive), marks, formatting records."""
-    text, marks, formatting = {}, Counter(), {}
+    text, marks, formatting, formatted_runs = {}, Counter(), {}, {}
     for e in root.iter(*TEXT_REVISIONS):
         group = (_short(e.tag), e.get(W + "author"), e.get(W + "date"))
         if e.getparent().tag in (W + "rPr", W + "trPr"):
@@ -264,7 +270,16 @@ def _history(root):
         else:
             text.setdefault(group, []).extend(_raw_tokens(e, LAYOUT_IDS))
     for e in root.iter(*PROPERTY_CHANGES):
-        formatting.setdefault((_short(e.tag), e.get(W + "id")), set()).add(_sig(e))
+        run = e.getparent().getparent()
+        tokens = list(_run_tokens(run, (), LAYOUT_IDS)) if (
+            e.tag == W + "rPrChange" and run is not None and run.tag == W + "r") else []
+        if tokens:
+            group = (_short(e.tag), e.get(W + "author"), e.get(W + "date"))
+            formatted_runs.setdefault(group, []).extend(tokens)
+        else:
+            # Empty runs have no coverage to align; retain their recorded history explicitly.
+            formatting.setdefault((_short(e.tag), e.get(W + "id")), set()).add(_sig(e))
+    formatting.update({k: _merge(v) for k, v in formatted_runs.items()})
     return {k: _merge(v) for k, v in text.items()}, marks, formatting
 
 
@@ -379,32 +394,42 @@ def _redline_quality(root, new, part):
     return findings
 
 
-def _uncertain_insertions(original, restored, keys, part):
-    """Exclude unresolved paragraphs from comparison, never from the saved file.
+def _added_insertions(original, restored, keys):
+    """Propose whole insertion ids inside added text, never waive a comparison.
 
-    A mix of old split pieces and new insertions with identical metadata cannot be
-    reliably classified. Only additional text can qualify; missing original text
-    remains a defect. Other paragraphs and formatting history are still compared.
+    Text alignment is only a hint. The caller must undo these ids and prove exact
+    restoration of the entire story and history, including all non-text content.
     """
     left, right = list(original.iter(W + "p")), list(restored.iter(W + "p"))
-    unresolved = []
+    proposed = set()
     if not keys or len(left) != len(right):
-        return restored, unresolved
-    compared = deepcopy(restored)
-    for number, (a, b, target) in enumerate(zip(left, right, list(compared.iter(W + "p"))), 1):
-        ids = [e.get(W + "id") for e in b.iter(W + "ins") if _key(e) in keys
-               and next(e.iterancestors(W + "p"), None) is b]
-        if not ids:
+        return proposed
+
+    def text_spans(p):
+        text, spans = "", {}
+        for t in p.iter(*TEXT):
+            if next(t.iterancestors(W + "p"), None) is not p or any(a.tag in PROPERTY_CHANGES for a in t.iterancestors()):
+                continue
+            start = len(text)
+            text += _text(t)
+            for ins in t.iterancestors(W + "ins"):
+                if _key(ins) in keys:
+                    first = spans.get(_key(ins), (start, start))[0]
+                    spans[_key(ins)] = first, len(text)
+        return text, spans
+
+    for a, b in zip(left, right):
+        if not any(_key(e) in keys for e in b.iter(W + "ins")):
             continue
-        before, after = ("".join(t[3] for t in _raw_tokens(p, LAYOUT_IDS) if t[2] is not None) for p in (a, b))
-        remaining = iter(after)
-        if not before or before == after or not all(c in remaining for c in before):
+        before, _ = text_spans(a)
+        after, spans = text_spans(b)
+        if max(len(before), len(after)) > 20_000:
             continue
-        unresolved.append({"part": part, "paragraph": number, "ids": ids, "preservation_not_checked": True,
-            "issue": "Old split pieces and new insertions may share author/date. Preservation in this paragraph "
-                     "is not checked; inspect the snapshot and result. No history was automatically rewritten."})
-        target.getparent().replace(target, deepcopy(a))
-    return compared, unresolved
+        added = [(j, end) for kind, _, _, j, end in difflib.SequenceMatcher(None, before, after, autojunk=False).get_opcodes()
+                 if kind == "insert"]
+        proposed.update(key for key, (start, end) in spans.items()
+                        if start < end and any(j <= start and end <= stop for j, stop in added))
+    return proposed
 
 
 def _story(part, a, b, author, new_comment_ids):
@@ -412,6 +437,7 @@ def _story(part, a, b, author, new_comment_ids):
     old_counts = Counter(_key(e) for e in a.iter(*REVISION_TAGS))
     old_keys = set(old_counts)
     groups = {(e.tag, e.get(W + "author"), e.get(W + "date")) for e in a.iter(*TEXT_REVISIONS)}
+    old_run_properties = {_sig(e) for e in a.iter(W + "rPrChange")}
     revisions = list(b.iter(*REVISION_TAGS))
     counts = Counter(_key(e) for e in revisions)
     # Splitting an old revision still creates elements requiring valid ids.
@@ -426,6 +452,9 @@ def _story(part, a, b, author, new_comment_ids):
         key = _key(e)
         if key in old_keys or key in new:
             continue
+        if e.tag == W + "rPrChange" and _sig(e) in old_run_properties:
+            split += 1  # Same recorded properties; coverage is checked after undoing new edits.
+            continue
         if (e.tag in TEXT_REVISIONS
                 and (e.tag, e.get(W + "author"), e.get(W + "date")) in groups):
             split += 1  # a piece of an existing revision; its text is still compared below
@@ -436,15 +465,22 @@ def _story(part, a, b, author, new_comment_ids):
     if same_stamp:
         trial, _ = _undo(b, new, new_comment_ids)
         if _sig(a) != _sig(trial):
-            alternative, problems = _undo(b, new | same_stamp, new_comment_ids)
-            if not problems and _sig(a) == _sig(alternative) and _history(a) == _history(alternative):
-                # Identical author/date can also be genuine new edits. Only use this
-                # interpretation when undoing them exactly restores the snapshot.
-                new |= same_stamp
-                split -= sum(_key(e) in same_stamp for e in revisions)
-                found["origins"].append({"part": part, "ids": sorted(k[1] or "" for k in same_stamp),
+            for extra in (same_stamp, _added_insertions(a, trial, same_stamp)):
+                if not extra:
+                    continue
+                alternative, problems = _undo(b, new | extra, new_comment_ids)
+                if problems or _sig(a) != _sig(alternative) or _history(a) != _history(alternative):
+                    continue
+                new |= extra
+                split -= sum(_key(e) in extra for e in revisions)
+                found["origins"].append({"part": part, "ids": sorted(k[1] or "" for k in extra),
                     "issue": "Old/new author and date coincide. Treating these as new exactly restores the snapshot, "
                              "but their historical provenance cannot be determined from metadata alone."})
+                break
+            else:
+                found["origins"].append({"part": part, "ids": sorted(k[1] or "" for k in same_stamp),
+                    "issue": "Old/new metadata is ambiguous and exact restoration was not established. "
+                             "All differences below remain reported; no paragraph or revision was excluded."})
     for e in revisions:
         key = _key(e)
         if key not in new or key in seen:
@@ -472,12 +508,8 @@ def _story(part, a, b, author, new_comment_ids):
     found["quality"] = _redline_quality(b, new, part)
     restored, problems = _undo(b, new, new_comment_ids)
     found["not_undone"] = [{"part": part, **p} for p in problems]
-    compared, unresolved = _uncertain_insertions(a, restored, same_stamp - new, part)
-    found["origins"].extend(unresolved)
     old_text, old_marks, old_formatting = _history(a)
-    new_text, new_marks, new_formatting = _history(compared)
-    if unresolved:
-        new_formatting = _history(restored)[2]  # never excuse lost formatting history
+    new_text, new_marks, new_formatting = _history(restored)
     for group in sorted(set(old_text) | set(new_text), key=repr):
         if old_text.get(group) != new_text.get(group):
             found["existing"].append({"part": part, "kind": group[0], "author": group[1], "date": group[2],
@@ -488,10 +520,11 @@ def _story(part, a, b, author, new_comment_ids):
                                       "issue": f"existing {group[3]} revision marks changed"})
     for key in sorted(set(old_formatting) | set(new_formatting), key=repr):
         if old_formatting.get(key) != new_formatting.get(key):
-            found["existing"].append({"part": part, "kind": key[0], "id": key[1],
+            identity = {"author": key[1], "date": key[2]} if len(key) == 3 else {"id": key[1]}
+            found["existing"].append({"part": part, "kind": key[0], **identity,
                                       "issue": "existing formatting revision changed or removed"})
-    if _sig(a) != _sig(compared):
-        found["untracked"].append({"part": part, "differences": _differences(a, compared)
+    if _sig(a) != _sig(restored):
+        found["untracked"].append({"part": part, "differences": _differences(a, restored)
                                    or [{"where": "outside paragraphs and table properties"}]})
     found["inherited"] = sum(1 for t in b.iter(W + "t") if t.text and any(
         x.tag == W + "del" and _key(x) not in new for x in t.iterancestors()))
@@ -645,13 +678,6 @@ def check_docx(original: Path, candidate: Path, author: str, changes_start: int 
                                   "note": "Pre-existing deletion structure needs review; no automatic repair performed."}})
     if totals["origins"]:
         checks.append({"check": "revision_origins", "status": "not_checked", "detail": totals["origins"]})
-    unresolved = [item for item in totals["origins"] if item.get("preservation_not_checked")]
-    if unresolved:
-        for item in checks:
-            if item["check"] in ("existing_revisions_preserved", "untracked_changes"):
-                item["detail"]["not_checked_paragraphs"] = unresolved
-                if item["status"] == "passed":
-                    item["status"] = "not_checked"
     checks.append({"check": "layout_and_legal_intent", "status": "not_checked",
                    "detail": "Open/render separately. Correct requested wording, layout, fields and legal meaning need review."})
     group = {s: [c["check"] for c in checks if c["status"] == s] for s in ("failed", "warning", "not_checked")}
