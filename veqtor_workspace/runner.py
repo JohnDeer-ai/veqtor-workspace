@@ -91,7 +91,7 @@ class Workspace:
 
     def info(self) -> dict:
         return {
-            "prototype": "0.0.8", "author": self.author,
+            "prototype": "0.0.9", "author": self.author,
             "access_mode": "paths" if self.dynamic else "legacy_folder",
             "read_paths": [str(p) for p in self.read_paths],
             "project_folder": str(self.project) if self.project else None,

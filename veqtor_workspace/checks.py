@@ -63,7 +63,7 @@ PROPERTIES = _w("rPr", "pPr", "tcPr", "trPr", "tblPr", "tblPrEx", "sectPr")
 RUN_WRAPPERS = TEXT_REVISIONS | _w("hyperlink", "smartTag", "customXml", "sdt", "sdtContent", "fldSimple", "dir", "bdo")
 TEXT = _w("t", "delText", "instrText", "delInstrText")
 LOCATED = (W + "p", W + "tblPr", W + "tblGrid", W + "trPr", W + "tcPr", W + "tblPrEx", W + "sectPr")
-FINDINGS = ("authors", "dates", "ids", "structure", "placement", "existing", "untracked", "not_undone", "quality")
+FINDINGS = ("authors", "dates", "ids", "structure", "placement", "existing", "untracked", "not_undone", "quality", "origins")
 
 
 class CheckLimit(Exception):
@@ -386,15 +386,30 @@ def _story(part, a, b, author, new_comment_ids):
     revisions = list(b.iter(*REVISION_TAGS))
     counts = Counter(_key(e) for e in revisions)
     new, split, seen = set(), 0, set()
+    same_stamp = set()
     for e in revisions:
         key = _key(e)
         if key in old_keys or key in new:
             continue
-        if (e.tag in TEXT_REVISIONS and e.get(W + "author") != author
+        if (e.tag in TEXT_REVISIONS
                 and (e.tag, e.get(W + "author"), e.get(W + "date")) in groups):
             split += 1  # a piece of an existing revision; its text is still compared below
+            if e.get(W + "author") == author:
+                same_stamp.add(key)
             continue
         new.add(key)
+    if same_stamp:
+        trial, _ = _undo(b, new, new_comment_ids)
+        if _sig(a) != _sig(trial):
+            alternative, problems = _undo(b, new | same_stamp, new_comment_ids)
+            if not problems and _sig(a) == _sig(alternative) and _history(a) == _history(alternative):
+                # Identical author/date can also be genuine new edits. Only use this
+                # interpretation when undoing them exactly restores the snapshot.
+                new |= same_stamp
+                split -= sum(_key(e) in same_stamp for e in revisions)
+                found["origins"].append({"part": part, "ids": sorted(k[1] or "" for k in same_stamp),
+                    "issue": "Old/new author and date coincide. Treating these as new exactly restores the snapshot, "
+                             "but their historical provenance cannot be determined from metadata alone."})
     for e in revisions:
         key = _key(e)
         if key not in new or key in seen:
@@ -504,7 +519,7 @@ def _package_issues(before, after, left, right):
     return issues, metadata
 
 
-def check_docx(original: Path, candidate: Path, author: str) -> dict:
+def check_docx(original: Path, candidate: Path, author: str, changes_start: int = 0) -> dict:
     checks = []
 
     def add(name, ok, detail, problem="failed"):
@@ -575,8 +590,9 @@ def check_docx(original: Path, candidate: Path, author: str) -> dict:
     add("existing_revisions_preserved", not totals["existing"], {
         "changed_or_removed": totals["existing"][:20], "count": len(totals["existing"]),
         "split_pieces_of_existing_revisions": split,
-        "scope": "All revision kinds after undoing new changes; splitting another author's revision "
-                 "is allowed when its text, author and date are kept."})
+        "scope": "All revision kinds after undoing new changes; splitting any author's earlier revision "
+                 "is allowed when its text, author, date and context are kept. Origins are inferred from the snapshot; "
+                 "a mismatch does not by itself prove damage when old/new metadata is ambiguous."})
     add("existing_comments_preserved", not comment_issues, {
         "changed_or_removed": comment_issues[:20],
         "scope": "Comment text, authors, dates, threads and resolved flags; anchors are checked by untracked_changes."})
@@ -590,11 +606,16 @@ def check_docx(original: Path, candidate: Path, author: str) -> dict:
         checks.append({"check": "inherited_deletion_text", "status": "not_checked",
                        "detail": {"ordinary_text_nodes_inside_existing_deletions": inherited,
                                   "note": "Pre-existing deletion structure needs review; no automatic repair performed."}})
+    if totals["origins"]:
+        checks.append({"check": "revision_origins", "status": "not_checked", "detail": totals["origins"]})
     checks.append({"check": "layout_and_legal_intent", "status": "not_checked",
                    "detail": "Open/render separately. Correct requested wording, layout, fields and legal meaning need review."})
     group = {s: [c["check"] for c in checks if c["status"] == s] for s in ("failed", "warning", "not_checked")}
+    from veqtor_workspace.reading import change_summary
+
     return {"status": "issues_found" if group["failed"] else "checked_with_limits",
             "summary": {"defects": group["failed"], "warnings": group["warning"], "not_checked": group["not_checked"]},
             "checks": checks, "changed_parts": changed,
             "original_sha256": hashlib.sha256(original.read_bytes()).hexdigest(),
-            "candidate_sha256": hashlib.sha256(candidate.read_bytes()).hexdigest()}
+            "candidate_sha256": hashlib.sha256(candidate.read_bytes()).hexdigest(),
+            "changes": change_summary(left, right, changes_start)}

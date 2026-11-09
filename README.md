@@ -36,6 +36,17 @@ as `recipe_text`; a separate file-reading call is unnecessary.
 
 ## Scope
 
+`veqtor_workspace.reading.read_docx(path, query=None, details=False, context=1, limit=6, cursor=None)`
+is an optional, read-only Python helper for the existing `run_python` tool. It pages
+through projected text, comments with anchors/replies and retained revision evidence.
+Follow `next_cursor` with identical options; file changes invalidate the cursor. Long
+passages continue in chunks, within the runner's reply size. The text incorporates
+pending edits for reading only; it is not legal approval or reconstruction of missing
+negotiation rounds. Tables use physical XML row/cell positions. Fields, numbering,
+drawings and complex structural changes have explicit coverage limits. Custom Python
+remains available. The same paragraph reader supplies check_docx's five before/after
+excerpts (`changes`, paged with `changes_start`) from the current task's snapshot.
+
 - macOS only. The Python process and children run under an OS sandbox: selected
   file/folder and runtime reads, writes inside task `work/`, no network. The server retains logs.
   The runner does not inherit account credentials or the user's HOME environment.
@@ -112,6 +123,11 @@ as `recipe_text`; a separate file-reading call is unnecessary.
   native Word comments/accept/reject. The same rendering adapter is callable without MCP.
   `page_numbering` explicitly labels all counts and page lists as preview pages; Word
   may paginate differently. Locate changes by clause number or quoted text as well.
+  `preview_query="distinctive phrase"` searches the saved preview PDF, reports matching
+  pages and shows up to three of them. It does not reconvert; no OCR or cross-page phrase
+  matching is included. `changed_pages` denotes visual differences, including page reflow.
+  Later page/search calls reuse a check from this version only when both file hashes and
+  author still match, returning a compact summary. Re-render after any final edit.
 - `redline_quality` is a non-blocking observation of unchanged word edges in adjacent
   new plain-text deletions/insertions with identical run properties. It skips complex
   history, moves, fields, formatting changes and groups over 20,000 characters per side;

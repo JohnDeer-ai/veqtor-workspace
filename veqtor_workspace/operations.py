@@ -14,6 +14,7 @@ from pathlib import Path
 import anyio
 
 from veqtor_workspace.checks import check_docx
+from veqtor_workspace.files import atomic_save
 from veqtor_workspace.preview import read_preview, render_pair, select_pages
 from veqtor_workspace.runner import Workspace
 from veqtor_workspace.tasks import DocumentTasks
@@ -116,13 +117,42 @@ def perform(w: Workspace, operation: str, args: dict) -> dict:
         raise ValueError("Choose render=True for new images or preview_id to reuse them, not both.")
     if pages is not None and not (render or preview_id):
         raise ValueError("Provide render=True or a preview_id when requesting pages.")
-    result, images = check_docx(source, target, w.author), []
+    changes_start, query = args.get("changes_start", 0), args.get("preview_query")
+    if query is not None and not (render or preview_id):
+        raise ValueError("Provide render=True or preview_id for preview_query.")
+    images, preview = [], None
+    reused_check = False
+    # Validate the protected preview's hashes BEFORE reading its cached check.
+    # Legacy previews and other checker versions are checked once again.
+    if preview_id:
+        preview = read_preview(w.root / ".runs/previews", preview_id, source, target)
+        receipt = Path(preview["directory"]) / "check.json"
+        try:
+            cached = json.loads(receipt.read_text())
+            result = cached["report"]
+            reused_check = (cached["version"] == "0.0.9" and cached["author"] == w.author
+                            and cached["changes_start"] == changes_start
+                            and result["original_sha256"] == preview["files"]["original"]["sha256"]
+                            and result["candidate_sha256"] == preview["files"]["candidate"]["sha256"])
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+    if not reused_check:
+        result = check_docx(source, target, w.author, changes_start)
     if render or preview_id:
         preview_root = w.root / ".runs/previews"
-        preview = (read_preview(preview_root, preview_id, source, target) if preview_id else
-                   render_pair(source, target, preview_root, w.preview_config, seconds,
-                               managed_process_group=w.managed_process_group))
-        result["preview"] = select_pages(preview, pages, args["preview_side"])
+        if preview is None:
+            preview = render_pair(source, target, preview_root, w.preview_config, seconds,
+                                  managed_process_group=w.managed_process_group)
+        if (preview["status"] == "rendered" and not reused_check
+                and result.get("original_sha256") == preview["files"]["original"]["sha256"]
+                and result.get("candidate_sha256") == preview["files"]["candidate"]["sha256"]):
+            with atomic_save(Path(preview["directory"]) / "check.json") as temporary:
+                temporary.write_text(json.dumps({"version": "0.0.9", "author": w.author,
+                                                 "changes_start": changes_start, "report": result}))
+        if reused_check:
+            result = {key: result[key] for key in ("status", "summary", "original_sha256", "candidate_sha256")}
+            result["check_reused"] = True
+        result["preview"] = select_pages(preview, pages, args["preview_side"], query)
         images = [base64.b64encode(Path(p).read_bytes()).decode() for p in result["preview"]["images"]]
     return {"report": result, "images": images}
 

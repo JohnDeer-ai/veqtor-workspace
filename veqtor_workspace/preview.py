@@ -21,22 +21,58 @@ from pathlib import Path
 DEFAULT_SECONDS = 60
 MAX_IMAGES = 3
 PAGE_NUMBERING = "Preview pages (1-based), not Microsoft Word page numbers; pagination may differ."
+CHANGE_MEANING = "Pages with visual differences, including pagination shifts; not a list of edited clauses."
 
 
-def select_pages(result: dict, pages: list[int] | None = None, side: str = "candidate") -> dict:
+def search_pages(result: dict, query: str, side: str) -> dict:
+    """Search the existing PDF, without converting or reading another document."""
+    from pypdf import PdfReader
+
+    from veqtor_workspace.reading import normalized
+
+    if not isinstance(query, str) or not normalized(query) or len(query) > 500:
+        raise ValueError("preview_query must contain 1–500 characters of text.")
+    directory = Path(result["directory"]) / side
+    index = directory / "page-text.json"
+    if index.is_file():
+        texts = json.loads(index.read_text())
+    else:
+        pdfs = list(directory.glob("*.pdf"))
+        if len(pdfs) != 1:
+            return {"status": "not_available", "detail": "This preview has no single searchable PDF.", "matching_pages": []}
+        texts = [" ".join((p.extract_text() or "").split()) for p in PdfReader(pdfs[0]).pages]
+        index.write_text(json.dumps(texts, ensure_ascii=False), encoding="utf-8")
+    matches = []
+    for page, text in enumerate(texts, 1):
+        position = normalized(text).find(normalized(query))
+        if position >= 0:
+            matches.append({"page": page, "excerpt": text[max(0, position - 55):position + len(query) + 100]})
+    return {"status": "searched", "query": query, "matching_pages": [m["page"] for m in matches],
+            "matches": matches[:12], "excerpt_count": min(12, len(matches)),
+            "scope": "Text search in this preview; whitespace/case ignored. No OCR or cross-page phrase matching."}
+
+
+def select_pages(result: dict, pages: list[int] | None = None, side: str = "candidate", query: str | None = None) -> dict:
     if side not in ("original", "candidate"):
         raise ValueError("Preview side must be original or candidate.")
     if result["status"] != "rendered":
         return result
     count = result["files"][side]["pages"]
+    search = search_pages(result, query, side) if query is not None else None
     if pages is None:
-        pages = [n for n in result["changed_pages"] if n <= count][:MAX_IMAGES] or [1]
+        pages = (search["matching_pages"][:MAX_IMAGES] if search else
+                 [n for n in result["changed_pages"] if n <= count][:MAX_IMAGES] or [1])
+    if search is not None and not pages:
+        return {**result, "page_numbering": PAGE_NUMBERING, "change_meaning": CHANGE_MEANING,
+                "search": search, "images": [], "image_side": side, "shown_pages": []}
     if not 1 <= len(pages) <= MAX_IMAGES or any(type(n) is not int or not 1 <= n <= count for n in pages):
         raise ValueError(f"Request 1–{MAX_IMAGES} page numbers between 1 and {count}.")
     images = [str(Path(result["directory"]) / side / f"page-{n}.png") for n in pages]
     if not all(Path(p).is_file() for p in images):
         raise ValueError("Preview images are missing; render the current documents again.")
-    return {**result, "page_numbering": PAGE_NUMBERING, "images": images, "image_side": side, "shown_pages": pages,
+    return {**result, "page_numbering": PAGE_NUMBERING, "change_meaning": CHANGE_MEANING,
+            **({"search": search} if search is not None else {}),
+            "images": images, "image_side": side, "shown_pages": pages,
             "unshown_changed_pages": [n for n in result["changed_pages"] if n not in pages]}
 
 
@@ -63,7 +99,8 @@ def render_pair(original: Path, candidate: Path, output: Path, config: Path,
         raise ValueError("Preview timeout must be positive and finite.")
     result = {"status": "not_available", "timeout_seconds": timeout_seconds, "page_numbering": PAGE_NUMBERING,
               "visual_review": "not_performed", "images": [],
-              "limits": "LibreOffice preview, not native Word. Review the images; comments and accept/reject are not tested."}
+              "limits": "LibreOffice preview, not native Word. Nested revisions may display differently; "
+                        "review complex history in Word. Comments and accept/reject are not tested."}
     try:
         settings = json.loads(config.read_text())
         python, script = (Path(settings[k]).expanduser().resolve(strict=True) for k in ("python", "script"))

@@ -153,6 +153,8 @@ def test_mcp_later_pages_without_reconversion_and_stale_preview_rejected(tmp_pat
             more = await client.call_tool("check_docx", {
                 **paths, "preview_id": data["preview_id"], "preview_pages": [4, 5, 6]})
             page_data = json.loads(more.content[0].text)["preview"]
+            assert json.loads(more.content[0].text)["check_reused"] is True
+            assert "checks" not in json.loads(more.content[0].text)
             assert page_data["reused"] is True
             assert page_data["page_numbering"] == data["page_numbering"]
             assert "not Microsoft Word" in page_data["page_numbering"]
@@ -173,3 +175,73 @@ def test_mcp_later_pages_without_reconversion_and_stale_preview_rejected(tmp_pat
             assert "changed since this preview" in stale.content[0].text
 
     asyncio.run(exercise())
+
+
+def test_search_and_page_calls_reuse_check_and_refuse_changed_bytes(tmp_path, monkeypatch):
+    import hashlib
+
+    from pypdf import PdfWriter
+    from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
+
+    from veqtor_workspace import operations
+    from veqtor_workspace.runner import Workspace
+
+    workspace = Workspace(tmp_path, Path(sys.executable), "Ilya")
+    original, candidate = tmp_path / 'inputs/source.docx', tmp_path / 'work/result.docx'
+    doc = Document()
+    doc.add_paragraph('Source content')
+    doc.save(original)
+    candidate.write_bytes(original.read_bytes())
+    directory = tmp_path / '.runs/previews/0123456789ab'
+    directory.mkdir(parents=True)
+    files = {}
+    for side in ['original', 'candidate']:
+        folder = directory / side
+        folder.mkdir()
+        writer = PdfWriter()
+        for number, words in enumerate(['First page', 'Section 9 payment', 'Section 9 other'], 1):
+            page = writer.add_blank_page(width=300, height=300)
+            font = DictionaryObject({NameObject('/Type'): NameObject('/Font'), NameObject('/Subtype'): NameObject('/Type1'),
+                                     NameObject('/BaseFont'): NameObject('/Helvetica')})
+            page[NameObject('/Resources')] = DictionaryObject({NameObject('/Font'): DictionaryObject({NameObject('/F1'): font})})
+            stream = DecodedStreamObject()
+            stream.set_data(f'BT /F1 12 Tf 20 200 Td ({words}) Tj ET'.encode())
+            page[NameObject('/Contents')] = writer._add_object(stream)
+            (folder / f'page-{number}.png').write_bytes(base64.b64decode(PNG))
+        writer.write(folder / 'preview.pdf')
+        files[side] = {'sha256': hashlib.sha256(original.read_bytes()).hexdigest(), 'pages': 3}
+    preview = {'status': 'rendered', 'directory': str(directory), 'preview_id': directory.name,
+               'files': files, 'changed_pages': [1, 2, 3]}
+    (directory / 'preview.json').write_text(json.dumps(preview))
+    monkeypatch.setattr(operations, 'render_pair', lambda *a, **kw: preview)
+    actual, calls = operations.check_docx, []
+
+    def counted(*args):
+        calls.append(args)
+        return actual(*args)
+
+    monkeypatch.setattr(operations, 'check_docx', counted)
+    args = {'original': 'inputs/source.docx', 'candidate': 'work/result.docx', 'task_id': None,
+            'render': True, 'preview_id': None, 'preview_pages': None, 'preview_side': 'candidate', 'preview_timeout_seconds': 60}
+    initial = operations.perform(workspace, 'check_docx', dict(args))
+    assert 'checks' in initial['report'] and len(calls) == 1
+    args.update(render=False, preview_id=directory.name, preview_query='section   9')
+    searched = operations.perform(workspace, 'check_docx', dict(args))['report']
+    assert searched['check_reused'] is True and len(calls) == 1
+    assert searched['preview']['search']['matching_pages'] == [2, 3]
+    assert searched['preview']['shown_pages'] == [2, 3]
+    assert 'pagination' in searched['preview']['change_meaning']
+    (directory / 'candidate/preview.pdf').unlink()
+    args['preview_query'] = 'absent phrase'
+    missing = operations.perform(workspace, 'check_docx', dict(args))
+    assert not missing['images'] and len(calls) == 1
+    receipt = directory / 'check.json'
+    cache = json.loads(receipt.read_text())
+    cache['version'] = '0.0.8'
+    receipt.write_text(json.dumps(cache))
+    operations.perform(workspace, 'check_docx', dict(args))
+    assert len(calls) == 2
+    candidate.write_bytes(b'changed')
+    with pytest.raises(ValueError, match='changed since this preview'):
+        operations.perform(workspace, 'check_docx', dict(args))
+    assert len(calls) == 2

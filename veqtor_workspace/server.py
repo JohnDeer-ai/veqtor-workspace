@@ -16,7 +16,7 @@ from veqtor_workspace.runner import DEFAULT_CALL_SECONDS, DEFAULT_STATE, Workspa
 
 def build_server(workspace: Workspace) -> MCPServer:
     operations = Operations(workspace)
-    server = MCPServer("veqtor-workspace", version="0.0.8", instructions=(
+    server = MCPServer("veqtor-workspace", version="0.0.9", instructions=(
         "Experimental local document workspace. Start with workspace_info and follow its included recipe_text. "
         "Write your own Python. Pass absolute paths selected by the user's task; no folder switching is needed in path mode. "
         "For reading, pass read_paths to run_python. Start each new user editing task with document_task(action='start', file=...). "
@@ -83,7 +83,8 @@ def build_server(workspace: Workspace) -> MCPServer:
                    preview_timeout_seconds: float = min(60, workspace.call_timeout_seconds), preview_id: str | None = None,
                    preview_pages: list[int] | None = None,
                    preview_side: Literal["original", "candidate"] = "candidate",
-                   task_id: str | None = None) -> CallToolResult:
+                   task_id: str | None = None, preview_query: str | None = None,
+                   changes_start: int = 0) -> CallToolResult:
         """Check a work/ DOCX candidate against its protected inputs/ original.
 
         Pass task_id alone for the snapshot and result of the current task. In legacy
@@ -103,6 +104,13 @@ def build_server(workspace: Workspace) -> MCPServer:
         pass preview_id and preview_pages without render=True to reuse the saved preview;
         all page numbers refer to this preview, not Microsoft Word pagination.
         Describe locations with clause numbers or text fragments as well.
+        changes lists five before/after paragraph excerpts from this task; use its
+        next_start as changes_start for more. Read full passages/history with the
+        optional veqtor_workspace.reading.read_docx Python helper. This is not a
+        reconstruction of past rounds. preview_query searches text in the existing
+        PDF and selects up to three matching pages, unless preview_pages is explicit.
+        changed_pages includes pagination shifts, not only edited clauses. Cached
+        page calls reuse the check for unchanged bytes and return a compact summary.
         preview_side can select the original. Reuse is refused if either document changed.
         Rendering is not
         visual approval and does not test Word comments or accept/reject. No automatic retry.
@@ -110,7 +118,8 @@ def build_server(workspace: Workspace) -> MCPServer:
         reply = await operations.call("check_docx", {
             "original": original, "candidate": candidate, "render": render, "task_id": task_id,
             "preview_timeout_seconds": preview_timeout_seconds, "preview_id": preview_id,
-            "preview_pages": preview_pages, "preview_side": preview_side})
+            "preview_pages": preview_pages, "preview_side": preview_side,
+            "preview_query": preview_query, "changes_start": changes_start})
         result = reply.get("report", reply)
         images = [ImageContent(type="image", mimeType="image/png", data=data) for data in reply.get("images", [])]
         return CallToolResult(content=[TextContent(type="text", text=json.dumps(result, ensure_ascii=False)), *images],
