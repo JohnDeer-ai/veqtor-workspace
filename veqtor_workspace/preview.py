@@ -18,6 +18,8 @@ import time
 import uuid
 from pathlib import Path
 
+from veqtor_workspace.files import atomic_save
+
 DEFAULT_SECONDS = 60
 MAX_IMAGES = 3
 PAGE_NUMBERING = "Preview pages (1-based), not Microsoft Word page numbers; pagination may differ."
@@ -34,14 +36,19 @@ def search_pages(result: dict, query: str, side: str) -> dict:
         raise ValueError("preview_query must contain 1–500 characters of text.")
     directory = Path(result["directory"]) / side
     index = directory / "page-text.json"
-    if index.is_file():
+    try:
         texts = json.loads(index.read_text())
-    else:
+        if not isinstance(texts, list) or not all(isinstance(t, str) for t in texts):
+            texts = None
+    except (OSError, ValueError):
+        texts = None
+    if texts is None:
         pdfs = list(directory.glob("*.pdf"))
         if len(pdfs) != 1:
             return {"status": "not_available", "detail": "This preview has no single searchable PDF.", "matching_pages": []}
         texts = [" ".join((p.extract_text() or "").split()) for p in PdfReader(pdfs[0]).pages]
-        index.write_text(json.dumps(texts, ensure_ascii=False), encoding="utf-8")
+        with atomic_save(index) as temporary:
+            temporary.write_text(json.dumps(texts, ensure_ascii=False), encoding="utf-8")
     matches = []
     for page, text in enumerate(texts, 1):
         position = normalized(text).find(normalized(query))
@@ -64,7 +71,8 @@ def select_pages(result: dict, pages: list[int] | None = None, side: str = "cand
                  [n for n in result["changed_pages"] if n <= count][:MAX_IMAGES] or [1])
     if search is not None and not pages:
         return {**result, "page_numbering": PAGE_NUMBERING, "change_meaning": CHANGE_MEANING,
-                "search": search, "images": [], "image_side": side, "shown_pages": []}
+                "search": search, "images": [], "image_side": side, "shown_pages": [],
+                "unshown_changed_pages": list(result["changed_pages"])}
     if not 1 <= len(pages) <= MAX_IMAGES or any(type(n) is not int or not 1 <= n <= count for n in pages):
         raise ValueError(f"Request 1–{MAX_IMAGES} page numbers between 1 and {count}.")
     images = [str(Path(result["directory"]) / side / f"page-{n}.png") for n in pages]

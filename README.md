@@ -134,6 +134,10 @@ excerpts (`changes`, paged with `changes_start`) from the current task's snapsho
   it does not certify minimality or auto-rewrite the document. Review its named fragments.
 - Existing-revision/comment preservation is a conservative baseline. Intentional
   acceptance, rejection or deletion requires interpretation of the report.
+  When old split pieces and new insertions have identical author/time metadata,
+  unresolved paragraphs are listed as `not_checked`; other paragraphs and formatting
+  history are still compared. Native Word acceptance of one text edit does not prove
+  that saving in Word preserved all earlier formatting revisions.
 - This is a single-user development experiment, not a reviewed execution-security
   product. Test the concrete access restrictions on the target machine.
 

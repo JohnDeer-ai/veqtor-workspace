@@ -59,8 +59,7 @@ def visible_text(node):
 
     if any(a.tag in (W + "del", W + "moveFrom") for a in node.iterancestors()):
         return ""
-    row = next(node.iterancestors(W + "tr"), None)
-    if row is not None and row.find(f"{W}trPr/{W}del") is not None:
+    if any(row.find(f"{W}trPr/{W}del") is not None for row in node.iterancestors(W + "tr")):
         return ""
     return walk(node)
 
@@ -159,15 +158,21 @@ def _comments(roots, records):
                 if p.get(W14 + "paraId")}
     extended = roots.get("word/commentsExtended.xml")
     metadata = {e.get(W15 + "paraId"): e for e in extended} if extended is not None else {}
+    extras = {c.get(W + "id"): next((metadata[p.get(W14 + "paraId")] for p in c.iter(W + "p")
+                                    if p.get(W14 + "paraId") in metadata), None) for c in comments}
+    parents = {cid: para_ids.get(ex.get(W15 + "paraIdParent")) if ex is not None else None
+               for cid, ex in extras.items()}
     result = []
     for c in comments:
         cid = c.get(W + "id")
-        ex = next((metadata[p.get(W14 + "paraId")] for p in c.iter(W + "p")
-                   if p.get(W14 + "paraId") in metadata), None)
-        parent = para_ids.get(ex.get(W15 + "paraIdParent")) if ex is not None else None
-        anchor = anchors.get(cid, anchors.get(parent, {"paragraphs": [], "text": []}))
+        ex, parent = extras[cid], parents[cid]
+        target, visited = cid, set()
+        while target is not None and target not in visited and not anchors.get(target, {}).get("paragraphs"):
+            visited.add(target)
+            target = parents.get(target)
+        anchor = anchors.get(target, {"paragraphs": [], "text": []})
         result.append({"type": "comment", "id": cid, "author": c.get(W + "author"), "date": c.get(W + "date"),
-                       "parent_comment_id": parent, "resolved": ex.get(W15 + "done") == "1" if ex is not None else None,
+                       "parent_comment_id": parent, "resolved": ex.get(W15 + "done") in ("1", "true") if ex is not None else None,
                        "paragraphs": anchor["paragraphs"], "anchor_markup_excerpt": "".join(anchor["text"])[:240],
                        "anchor_status": "located" if anchor["paragraphs"] else "not_located",
                        "text": "\n".join(visible_text(p) for p in c.iter(W + "p"))})

@@ -231,10 +231,34 @@ def test_search_and_page_calls_reuse_check_and_refuse_changed_bytes(tmp_path, mo
     assert searched['preview']['search']['matching_pages'] == [2, 3]
     assert searched['preview']['shown_pages'] == [2, 3]
     assert 'pagination' in searched['preview']['change_meaning']
+    index = directory / 'candidate/page-text.json'
+    for broken in ['["partial', '{}', '["page", 3]']:
+        index.write_text(broken)
+        recovered = operations.perform(workspace, 'check_docx', dict(args))['report']
+        assert recovered['preview']['search']['matching_pages'] == [2, 3]
+        assert recovered['check_reused'] is True and len(calls) == 1
+    index.unlink()
+    write_text = Path.write_text
+
+    def interrupted(path, text, *a, **kw):
+        if path.parent == index.parent and path.suffix == '.json':
+            write_text(path, text[:len(text) // 2], *a, **kw)
+            raise KeyboardInterrupt('interrupted index write')
+        return write_text(path, text, *a, **kw)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, 'write_text', interrupted)
+        with pytest.raises(KeyboardInterrupt, match='interrupted index write'):
+            operations.perform(workspace, 'check_docx', dict(args))
+    assert not index.exists()  # A partial index must never become the published cache.
+    recovered = operations.perform(workspace, 'check_docx', dict(args))['report']
+    assert recovered['preview']['search']['matching_pages'] == [2, 3]
     (directory / 'candidate/preview.pdf').unlink()
     args['preview_query'] = 'absent phrase'
     missing = operations.perform(workspace, 'check_docx', dict(args))
     assert not missing['images'] and len(calls) == 1
+    assert missing['report']['preview']['shown_pages'] == []
+    assert missing['report']['preview']['unshown_changed_pages'] == [1, 2, 3]
     receipt = directory / 'check.json'
     cache = json.loads(receipt.read_text())
     cache['version'] = '0.0.8'

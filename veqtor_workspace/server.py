@@ -16,7 +16,7 @@ from veqtor_workspace.runner import DEFAULT_CALL_SECONDS, DEFAULT_STATE, Workspa
 
 def build_server(workspace: Workspace) -> MCPServer:
     operations = Operations(workspace)
-    server = MCPServer("veqtor-workspace", version="0.0.9", instructions=(
+    server = MCPServer("veqtor-workspace", version="0.0.10", instructions=(
         "Experimental local document workspace. Start with workspace_info and follow its included recipe_text. "
         "Write your own Python. Pass absolute paths selected by the user's task; no folder switching is needed in path mode. "
         "For reading, pass read_paths to run_python. Start each new user editing task with document_task(action='start', file=...). "
