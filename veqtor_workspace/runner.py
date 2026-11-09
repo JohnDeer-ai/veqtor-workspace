@@ -25,10 +25,12 @@ def _quoted(path: Path) -> str:
 class Workspace:
     def __init__(self, root: Path, python: Path, author: str, project: Path | None = None,
                  call_timeout_seconds: float = DEFAULT_CALL_SECONDS, managed_process_group: bool = False,
-                 dynamic: bool = False, read_paths: list[str] | None = None, preview_config: Path | None = None):
+                 dynamic: bool = False, read_paths: list[str] | None = None, preview_config: Path | None = None,
+                 private_root: Path | None = None):
         if platform.system() != "Darwin" or not Path("/usr/bin/sandbox-exec").exists():
             raise RuntimeError("This prototype requires macOS sandbox-exec; no unrestricted fallback.")
         self.root = root.expanduser().resolve()
+        self.private_root = (private_root or self.root).expanduser().resolve()
         self.project = project.expanduser().resolve(strict=True) if project else None
         if self.project is not None and not self.project.is_dir():
             raise ValueError("The selected project must be a directory.")
@@ -89,7 +91,7 @@ class Workspace:
 
     def info(self) -> dict:
         return {
-            "prototype": "0.0.7", "author": self.author,
+            "prototype": "0.0.8", "author": self.author,
             "access_mode": "paths" if self.dynamic else "legacy_folder",
             "read_paths": [str(p) for p in self.read_paths],
             "project_folder": str(self.project) if self.project else None,
@@ -117,13 +119,24 @@ class Workspace:
             and not p.is_symlink()
         )[:100]
 
-    def profile(self) -> str:
+    def profile(self, script: Path) -> str:
         read = [self.root, self.package, *self.runtime_roots,
                 Path("/System"), Path("/usr/lib"), Path("/usr/share"), Path("/Library/Apple")]
         if self.project:
             read.append(self.project)
         paths = " ".join(f"(subpath {_quoted(p)})" for p in read)
         paths += " " + " ".join(f"({'subpath' if p.is_dir() else 'literal'} {_quoted(p)})" for p in self.read_paths)
+        private = ""
+        if self.dynamic:
+            # A broad selected parent must not expose other tasks, previews or logs.
+            # A task can inspect its own history; a plain call only its inputs/work
+            # and the script currently executing, not the connection's whole archive.
+            visible = [self.root] if self.root != self.private_root else [self.root / "inputs", self.root / "work"]
+            exceptions = " ".join(f"(require-not (subpath {_quoted(p)}))" for p in visible)
+            # Python's getcwd/import startup needs the cwd directory itself, not its descendants.
+            private = (f"(deny file-read-data (require-all (subpath {_quoted(self.private_root)}) "
+                       f"{exceptions} (require-not (literal {_quoted(self.root)})) "
+                       f"(require-not (literal {_quoted(script)}))))")
         return f'''(version 1)
 (deny default)
 (allow process-fork process-exec sysctl-read)
@@ -133,6 +146,7 @@ class Workspace:
 (allow file-read* {paths})
 (allow file-read* file-write* (subpath {_quoted(self.root / "work")}))
 (allow file-read* file-write* (literal "/dev/null") (literal "/dev/urandom") (literal "/dev/random"))
+{private}
 '''
 
     def run(self, code: str, timeout_seconds: float | None = None) -> dict:
@@ -163,7 +177,7 @@ class Workspace:
         timed_out = False
         with stem.with_suffix(".stdout").open("wb") as out, stem.with_suffix(".stderr").open("wb") as err:
             process = subprocess.Popen(
-                ["/usr/bin/sandbox-exec", "-p", self.profile(), str(self.python), "-u", "-B", "-c", bootstrap],
+                ["/usr/bin/sandbox-exec", "-p", self.profile(script), str(self.python), "-u", "-B", "-c", bootstrap],
                 cwd=self.root, env=env, stdin=subprocess.DEVNULL, stdout=out, stderr=err,
                 start_new_session=not self.managed_process_group,
             )

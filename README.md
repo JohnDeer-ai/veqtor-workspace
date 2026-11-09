@@ -26,14 +26,18 @@ changes, check it and save it back. The server snapshots the latest saved versio
 the selected file at `document_task(save)`. No manual copying into inputs/ is needed.
 Optional `read_paths` on start selects supporting files/folders. `run_python(read_paths=[...])`
 can read selected material without creating an editing task; additional grants last only
-that call. No shared current folder is switched. The model starts one task per new user editing request, not per Python call; MCP itself
+that call. Private copies, previews and logs of other tasks are not readable by Python,
+even when a selected parent contains the private storage. A task keeps access to its own
+copies and logs. Moving supporting material does not block checking or editing these
+copies; a later attempt to read the moved material fails normally. No shared current folder
+is switched. The model starts one task per new user editing request, not per Python call; MCP itself
 does not receive chat boundaries. `workspace_info` includes [the editing recipe](veqtor_workspace/RECIPE.md)
 as `recipe_text`; a separate file-reading call is unnecessary.
 
 ## Scope
 
 - macOS only. The Python process and children run under an OS sandbox: selected
-  selected file/folder and runtime reads, writes inside task `work/`, no network. The server retains logs.
+  file/folder and runtime reads, writes inside task `work/`, no network. The server retains logs.
   The runner does not inherit account credentials or the user's HOME environment.
 - Selected documents and `inputs/` snapshots are read-only for task code. The model edits
   a hidden task copy; only `document_task(save)` publishes it to the selected path.
@@ -106,6 +110,8 @@ as `recipe_text`; a separate file-reading call is unnecessary.
   stale previews if either document changed. Inspect every relevant changed page; three
   images are not a complete review of a large edit. This does not certify layout or test
   native Word comments/accept/reject. The same rendering adapter is callable without MCP.
+  `page_numbering` explicitly labels all counts and page lists as preview pages; Word
+  may paginate differently. Locate changes by clause number or quoted text as well.
 - `redline_quality` is a non-blocking observation of unchanged word edges in adjacent
   new plain-text deletions/insertions with identical run properties. It skips complex
   history, moves, fields, formatting changes and groups over 20,000 characters per side;

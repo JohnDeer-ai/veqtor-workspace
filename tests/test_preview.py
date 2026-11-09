@@ -154,6 +154,8 @@ def test_mcp_later_pages_without_reconversion_and_stale_preview_rejected(tmp_pat
                 **paths, "preview_id": data["preview_id"], "preview_pages": [4, 5, 6]})
             page_data = json.loads(more.content[0].text)["preview"]
             assert page_data["reused"] is True
+            assert page_data["page_numbering"] == data["page_numbering"]
+            assert "not Microsoft Word" in page_data["page_numbering"]
             assert page_data["shown_pages"] == [4, 5, 6]
             assert sum(c.type == "image" for c in more.content) == 3
             before = await client.call_tool("check_docx", {

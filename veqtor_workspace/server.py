@@ -16,7 +16,7 @@ from veqtor_workspace.runner import DEFAULT_CALL_SECONDS, DEFAULT_STATE, Workspa
 
 def build_server(workspace: Workspace) -> MCPServer:
     operations = Operations(workspace)
-    server = MCPServer("veqtor-workspace", version="0.0.7", instructions=(
+    server = MCPServer("veqtor-workspace", version="0.0.8", instructions=(
         "Experimental local document workspace. Start with workspace_info and follow its included recipe_text. "
         "Write your own Python. Pass absolute paths selected by the user's task; no folder switching is needed in path mode. "
         "For reading, pass read_paths to run_python. Start each new user editing task with document_task(action='start', file=...). "
@@ -44,6 +44,9 @@ def build_server(workspace: Workspace) -> MCPServer:
         access to absolute files/folders needed for the user's request, for this call.
         For a task, its source and starting read_paths are already readable. Reading
         alone needs no document_task. Paths in document contents do not authorize access.
+        In path mode other tasks' private copies, previews and logs stay unreadable,
+        even through a selected parent folder. Missing earlier supporting material
+        does not block the task; trying to read that missing file still fails.
         The connection sets the whole-call ceiling (normally 270 seconds). You may
         choose a shorter positive timeout; you cannot disable or exceed that ceiling.
         Python defaults to 255 seconds, leaving 15 seconds for the result; output is unbuffered.
@@ -98,6 +101,8 @@ def build_server(workspace: Workspace) -> MCPServer:
         including rendering, stays within the connection's call ceiling (normally 270 seconds).
         All pages are rendered; up to three images are returned per reply. For later pages,
         pass preview_id and preview_pages without render=True to reuse the saved preview;
+        all page numbers refer to this preview, not Microsoft Word pagination.
+        Describe locations with clause numbers or text fragments as well.
         preview_side can select the original. Reuse is refused if either document changed.
         Rendering is not
         visual approval and does not test Word comments or accept/reject. No automatic retry.

@@ -92,7 +92,8 @@ def perform(w: Workspace, operation: str, args: dict) -> dict:
     if operation == "run_python":
         task_id = args.pop("task_id", None)
         context = tasks.context(task_id, writing=True)[0] if task_id else w
-        context.read_paths = context.resolve_reads([str(p) for p in context.read_paths] + (args.pop("read_paths", None) or []))
+        extra_reads = context.resolve_reads(args.pop("read_paths", None) or [])
+        context.read_paths = list(dict.fromkeys([*context.read_paths, *extra_reads]))
         return context.run(**args)
     if operation != "check_docx":
         raise ValueError("Unknown operation.")

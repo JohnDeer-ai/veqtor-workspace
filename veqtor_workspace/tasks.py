@@ -28,8 +28,12 @@ class DocumentTasks:
 
     def _context(self, folder: Path, read_paths: list[str] | None = None) -> Workspace:
         w = self.workspace
-        return Workspace(folder, w.python, w.author, w.project, w.call_timeout_seconds, w.managed_process_group,
-                         w.dynamic, read_paths, w.preview_config)
+        child = Workspace(folder, w.python, w.author, w.project, w.call_timeout_seconds, w.managed_process_group,
+                          w.dynamic, preview_config=w.preview_config, private_root=w.private_root)
+        # These paths were resolved and validated at start, in protected task metadata.
+        # Missing supporting material should fail only when code actually reads it.
+        child.read_paths = [Path(p) for p in read_paths or []]
+        return child
 
     @staticmethod
     def _record(folder: Path, data: dict):
@@ -91,7 +95,7 @@ class DocumentTasks:
         data, folder = self.read(task_id)
         if writing and (data["saved"] or data.get("save_sha256")):
             raise ValueError("Saving has started for this task. Inspect its status. Start a new task before further edits.")
-        return self._context(folder, data.get("read_paths")), data
+        return self._context(folder, data.get("read_paths") if writing else None), data
 
     def status(self, task_id: str) -> dict:
         data, _ = self.read(task_id)

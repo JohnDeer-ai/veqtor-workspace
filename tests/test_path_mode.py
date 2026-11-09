@@ -6,6 +6,7 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
 from mcp import StdioServerParameters
 from mcp.client import Client
 from mcp.client.stdio import stdio_client
@@ -76,6 +77,107 @@ Path({task['candidate']!r}).write_text('edited')
             assert invalid.is_error
             invalid = await client.call_tool("document_task", {"action": "start", "file": str(state / "work/injected.txt")})
             assert invalid.is_error
+    asyncio.run(exercise())
+
+
+async def call_tool(client, name, args):
+    reply = await client.call_tool(name, args)
+    assert not reply.is_error, reply
+    data = reply.structured_content or json.loads(reply.content[0].text)
+    return data.get("result", data)
+
+
+def test_private_task_history_cannot_be_read_even_through_selected_parent(tmp_path):
+    state = tmp_path / "private state"
+    source, other = tmp_path / "first.txt", tmp_path / "second.txt"
+    source.write_text("First task contents")
+    other.write_text("Second task contents")
+
+    async def exercise():
+        params = StdioServerParameters(command=sys.executable, args=["-m", "veqtor_workspace.server",
+            "--state-dir", str(state), "--author", "Ilya",
+            "--python", os.environ.get("VEQTOR_TEST_PYTHON", sys.executable)])
+        async with Client(stdio_client(params)) as client:
+            first = await call_tool(client, "document_task", {"action": "start", "file": str(source)})
+            own = await call_tool(client, "run_python", {"task_id": first["task_id"],
+                "code": f"from pathlib import Path; print(Path({first['original']!r}).read_text())"})
+            assert own["stdout"] == "First task contents\n"
+            previous = await call_tool(client, "run_python", {"code": "print('Earlier read-only output')"})
+            preview = state / ".runs/previews/example/page-1.png"
+            preview.parent.mkdir(parents=True)
+            preview.write_bytes(b"private preview contents")
+            snapshot = Path(first["snapshot"])
+            alias = state / "work/alias.txt"
+            alias.symlink_to(snapshot)
+            paths = [snapshot, Path(first["cwd"]) / first["candidate"],
+                     Path(first["cwd"]) / own["stdout_path"], state / previous["stdout_path"], preview, alias]
+            probe = f'''
+from pathlib import Path
+for name in {[str(p) for p in paths]!r}:
+    try: Path(name).read_bytes(); print('UNEXPECTED READ')
+    except PermissionError: print('blocked')
+'''
+            second = await call_tool(client, "document_task", {"action": "start", "file": str(other)})
+            for options in ({}, {"read_paths": [str(tmp_path)]},
+                            {"task_id": second["task_id"], "read_paths": [str(tmp_path)]}):
+                result = await call_tool(client, "run_python", {"code": probe, **options})
+                assert result["exit_code"] == 0, result
+                assert result["stdout"] == "blocked\n" * len(paths), result
+            # Selecting a real external file still works, as does the active task's own history.
+            own_again = await call_tool(client, "run_python", {"task_id": first["task_id"],
+                "read_paths": [str(other)], "code": f"from pathlib import Path; print(Path({str(other)!r}).read_text()); "
+                f"print(Path({own['stdout_path']!r}).read_text().strip())"})
+            assert own_again["stdout"] == "Second task contents\nFirst task contents\n"
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("support_kind", ["file", "folder"])
+def test_moved_support_does_not_block_copy_check_preview_edit_or_save(tmp_path, support_kind):
+    source = docx(tmp_path / "contract.docx", [para(run("Original text"))])
+    support = tmp_path / "support"
+    if support_kind == "folder":
+        support.mkdir()
+        material = support / "reference.txt"
+    else:
+        material = support
+    material.write_text("Supporting material")
+    renderer = tmp_path / "renderer.py"
+    renderer.write_text("import sys,base64;from pathlib import Path\n"
+                        "p=Path(sys.argv[sys.argv.index('--output_dir')+1]);p.mkdir(parents=True)\n"
+                        f"(p/'page-1.png').write_bytes(base64.b64decode({PNG!r}))\n")
+    config = tmp_path / "preview.json"
+    config.write_text(json.dumps({"python": sys.executable, "script": str(renderer)}))
+
+    async def exercise():
+        params = StdioServerParameters(command=sys.executable, args=["-m", "veqtor_workspace.server",
+            "--state-dir", str(tmp_path / "state"), "--preview-config", str(config), "--author", "Ilya"])
+        async with Client(stdio_client(params)) as client:
+            task = await call_tool(client, "document_task", {"action": "start", "file": str(source),
+                                                            "read_paths": [str(support)]})
+            support.rename(tmp_path / "moved-support")
+            result = await call_tool(client, "run_python", {"task_id": task["task_id"], "code": f'''
+from pathlib import Path
+path = Path({task['candidate']!r})
+path.write_bytes(path.read_bytes())
+try: Path({str(material)!r}).read_text()
+except FileNotFoundError: print('Only the missing material is unavailable')
+'''
+            })
+            assert result["exit_code"] == 0, result
+            assert result["stdout"] == "Only the missing material is unavailable\n"
+            check = await client.call_tool("check_docx", {"task_id": task["task_id"], "render": True})
+            assert not check.is_error, check
+            report = json.loads(check.content[0].text)
+            assert report["summary"]["defects"] == []
+            assert report["preview"]["status"] == "rendered"
+            assert "not Microsoft Word" in report["preview"]["page_numbering"]
+            reused = await client.call_tool("check_docx", {"task_id": task["task_id"],
+                "preview_id": report["preview"]["preview_id"], "preview_pages": [1]})
+            assert not reused.is_error
+            assert "not Microsoft Word" in json.loads(reused.content[0].text)["preview"]["page_numbering"]
+            saved = await call_tool(client, "document_task", {"action": "save", "task_id": task["task_id"]})
+            assert saved["status"] == "saved"
+            assert (await call_tool(client, "document_task", {"action": "status", "task_id": task["task_id"]}))["status"] == "saved"
     asyncio.run(exercise())
 
 

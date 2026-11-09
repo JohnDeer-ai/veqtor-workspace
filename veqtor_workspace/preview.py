@@ -20,6 +20,7 @@ from pathlib import Path
 
 DEFAULT_SECONDS = 60
 MAX_IMAGES = 3
+PAGE_NUMBERING = "Preview pages (1-based), not Microsoft Word page numbers; pagination may differ."
 
 
 def select_pages(result: dict, pages: list[int] | None = None, side: str = "candidate") -> dict:
@@ -35,7 +36,7 @@ def select_pages(result: dict, pages: list[int] | None = None, side: str = "cand
     images = [str(Path(result["directory"]) / side / f"page-{n}.png") for n in pages]
     if not all(Path(p).is_file() for p in images):
         raise ValueError("Preview images are missing; render the current documents again.")
-    return {**result, "images": images, "image_side": side, "shown_pages": pages,
+    return {**result, "page_numbering": PAGE_NUMBERING, "images": images, "image_side": side, "shown_pages": pages,
             "unshown_changed_pages": [n for n in result["changed_pages"] if n not in pages]}
 
 
@@ -60,7 +61,7 @@ def render_pair(original: Path, candidate: Path, output: Path, config: Path,
     """Render both files once, sharing one deadline; return evidence, not visual approval."""
     if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
         raise ValueError("Preview timeout must be positive and finite.")
-    result = {"status": "not_available", "timeout_seconds": timeout_seconds,
+    result = {"status": "not_available", "timeout_seconds": timeout_seconds, "page_numbering": PAGE_NUMBERING,
               "visual_review": "not_performed", "images": [],
               "limits": "LibreOffice preview, not native Word. Review the images; comments and accept/reject are not tested."}
     try:
