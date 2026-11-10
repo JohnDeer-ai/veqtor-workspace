@@ -3,6 +3,8 @@
 An independent local document workspace, extracted from the Veqtor pilot. The connected model
 writes Python for the selected documents. Four MCP tools: `workspace_info`,
 `document_task`, `run_python`, `check_docx`. No embedded model, account service or negotiation database.
+The model chooses how to edit and verify the result. Reading/edit helpers, diagnostics
+and preview are optional; saving never requires a clean diagnostic report.
 
 ## Try on macOS
 
@@ -20,10 +22,14 @@ client. An optional `--python /absolute/path/to/python` selects a different docu
 runtime with the required libraries. `uv run` provisions the default environment.
 No existing Veqtor installation or client configuration is changed by this prototype.
 
-Ask the model to read `workspace_info`, edit the selected file with genuine tracked
-changes, check it and save it back. The server snapshots the latest saved version at
+Ask the model to read `workspace_info`, perform the requested changes, verify the result
+by a suitable method and save it. The server snapshots the latest saved version at
 `document_task(start, file="/absolute/path")`, keeps the editable copy in private state and replaces
-the selected file at `document_task(save)`. No manual copying into inputs/ is needed.
+the selected file at `document_task(save)`. Add `file="/absolute/path/new-name.docx"`
+to save under a new name in an existing folder. This creates a new file without replacing
+the source; an existing destination is never overwritten. The new output is based on the
+task snapshot, even if the source was subsequently changed or moved.
+No manual copying into inputs/ is needed.
 Optional `read_paths` on start selects supporting files/folders. `run_python(read_paths=[...])`
 can read selected material without creating an editing task; additional grants last only
 that call. Private copies, previews and logs of other tasks are not readable by Python,
@@ -32,7 +38,9 @@ copies and logs. Moving supporting material does not block checking or editing t
 copies; a later attempt to read the moved material fails normally. No shared current folder
 is switched. The model starts one task per new user editing request, not per Python call; MCP itself
 does not receive chat boundaries. `workspace_info` includes [the editing recipe](veqtor_workspace/RECIPE.md)
-as `recipe_text`; a separate file-reading call is unnecessary.
+as `recipe_text`; a separate file-reading call is unnecessary. Detailed examples are in
+[the optional reference](veqtor_workspace/REFERENCE.md), returned as a path in `reference`,
+not injected into every initial reply.
 
 ## Scope
 
@@ -55,14 +63,15 @@ excerpts (`changes`, paged with `changes_start`) from the current task's snapsho
   This works for any file format; DOCX has an additional checker. A prompt cannot
   override macOS restrictions. In path mode the model selects the required read paths
   and target file from user instructions; document contents do not authorize access.
-- Save through `veqtor_workspace.files.atomic_save`: write and validate its temporary
+- Optionally save through `veqtor_workspace.files.atomic_save`: write and validate its temporary
   path before leaving the context. Only successful completion replaces the destination;
   a failed write leaves the old file intact. This optional helper protects task-copy
   writes; the final project-file replacement always uses it. A killed process may leave
   a hidden temporary file. It does not validate document content or undo a completed save.
-- Saving records the intended result hash before replacing the project file. If the
+- Saving records the destination and intended result hash before publishing. If the
   final status write fails or the call stops after replacement, the next status read
-  recovers the result by comparing hashes. Editing is closed once saving begins.
+  recovers the result by comparing hashes at that destination. This also covers save-as.
+  Editing is closed once saving begins; an interrupted save cannot be redirected silently.
   `document_task(action="status", task_id=...)` inspects the outcome without saving:
   `saved`, `saved_then_changed`, `not_saved`, or `outcome_unknown`. A newer external
   version is never overwritten merely to resolve an uncertain earlier save.
@@ -104,10 +113,15 @@ excerpts (`changes`, paged with `changes_start`) from the current task's snapsho
   scripts remain in `.runs/` and are read-only to task code.
 - The checker undoes the new tracked changes and new comments and compares the whole
   document with the original, so untracked text, formatting, paragraph, table and
-  comment changes are reported with their location. Its summary separates defects,
-  compatibility warnings and checks not performed: structures that Word opens only as a
-  repaired copy are defects, placements Word handles but does not write itself are
-  warnings. It does not open Microsoft Word, validate XSD/relationships, or certify legal
+  comment mismatches are reported with their location. It is an optional diagnostic,
+  not a mandatory step, a full difference report or an approval verdict. The summary has
+  `errors` (the comparison could not read the package/XML), `observations` (comparison
+  mismatches or revision metadata/structure notices), `warnings` and `not_checked`.
+  Observations need interpretation against the user's task: authorized acceptance,
+  rejection, comment deletion and clean copies may intentionally change the baseline.
+  Ambiguous old/new metadata can also produce false observations. Concrete unexpected
+  losses and compatibility problems still warrant investigation; a clean report is not
+  required before saving. The checker does not open Word, validate XSD/relationships, or certify legal
   wording, layout or fields. Its separate resource limit is 64 MiB of expanded ZIP
   content and 5,000 members: larger packages return `not_checked`, not a corruption
   finding. This does not prevent Python from reading or editing those files.

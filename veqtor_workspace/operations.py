@@ -85,11 +85,13 @@ def perform(w: Workspace, operation: str, args: dict) -> dict:
         action, file, task_id = args["action"], args.get("file"), args.get("task_id")
         if action == "start" and file and task_id is None:
             return tasks.start(file, args.get("read_paths"))
-        if action in ("save", "status") and task_id and file is None:
+        if action in ("save", "status") and task_id:
             if args.get("read_paths"):
                 raise ValueError("read_paths belongs to start or run_python, not save/status.")
-            return tasks.save(task_id) if action == "save" else tasks.status(task_id)
-        raise ValueError("Use start with file, or save/status with task_id.")
+            if action == "status" and file is not None:
+                raise ValueError("status reads the recorded destination; omit file.")
+            return tasks.save(task_id, file) if action == "save" else tasks.status(task_id)
+        raise ValueError("Use start with file, or save/status with task_id. save optionally accepts a new file path.")
     if operation == "run_python":
         task_id = args.pop("task_id", None)
         context = tasks.context(task_id, writing=True)[0] if task_id else w
@@ -130,7 +132,7 @@ def perform(w: Workspace, operation: str, args: dict) -> dict:
         try:
             cached = json.loads(receipt.read_text())
             result = cached["report"]
-            reused_check = (cached["version"] == "0.0.11" and cached["author"] == w.author
+            reused_check = (cached["version"] == "0.0.12" and cached["author"] == w.author
                             and cached["changes_start"] == changes_start
                             and result["original_sha256"] == preview["files"]["original"]["sha256"]
                             and result["candidate_sha256"] == preview["files"]["candidate"]["sha256"])
@@ -147,7 +149,7 @@ def perform(w: Workspace, operation: str, args: dict) -> dict:
                 and result.get("original_sha256") == preview["files"]["original"]["sha256"]
                 and result.get("candidate_sha256") == preview["files"]["candidate"]["sha256"]):
             with atomic_save(Path(preview["directory"]) / "check.json") as temporary:
-                temporary.write_text(json.dumps({"version": "0.0.11", "author": w.author,
+                temporary.write_text(json.dumps({"version": "0.0.12", "author": w.author,
                                                  "changes_start": changes_start, "report": result}))
         if reused_check:
             result = {key: result[key] for key in ("status", "summary", "original_sha256", "candidate_sha256")}

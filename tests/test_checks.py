@@ -52,7 +52,7 @@ def docx(path, body, parts=None):
 def check(tmp_path, original, candidate, original_parts=None, candidate_parts=None):
     report = check_docx(docx(tmp_path / "original.docx", original, original_parts),
                         docx(tmp_path / "candidate.docx", candidate, candidate_parts), ME)
-    return {c["check"] for c in report["checks"] if c["status"] == "failed"}, report
+    return {c["check"] for c in report["checks"] if c["status"] in ("error", "observation")}, report
 
 
 def test_checker_resource_limit_is_not_document_damage(tmp_path):
@@ -60,7 +60,7 @@ def test_checker_resource_limit_is_not_document_damage(tmp_path):
                 {f"media/{i}.bin": b"x" for i in range(5000)})
     report = check_docx(path, path, ME)
     assert report["status"] == "not_checked"
-    assert report["summary"]["defects"] == []
+    assert report["summary"]["observations"] == []
     assert report["summary"]["not_checked"] == ["docx_preservation"]
 
 
@@ -112,7 +112,7 @@ def test_word_native_edits_pass(tmp_path, name):
     original, candidate = NATIVE[name]
     failed, report = check(tmp_path, original, candidate)
     assert not failed, report
-    assert report["status"] == "checked_with_limits"
+    assert report["status"] == "diagnostic"
 
 
 DEFECTS = {
@@ -166,8 +166,8 @@ def test_defects_are_reported(tmp_path, name):
     original, candidate, expected = DEFECTS[name]
     failed, report = check(tmp_path, original, candidate)
     assert expected in failed, report
-    assert report["status"] == "issues_found"
-    assert expected in report["summary"]["defects"]
+    assert report["status"] == "diagnostic"
+    assert expected in report["summary"]["observations"]
     assert "layout_and_legal_intent" in report["summary"]["not_checked"]
 
 
@@ -187,7 +187,7 @@ def test_placement_is_a_warning_not_a_defect(tmp_path, name):
     original, candidate = WARNINGS[name]
     failed, report = check(tmp_path, original, candidate)
     assert not failed, report
-    assert report["status"] == "checked_with_limits"
+    assert report["status"] == "diagnostic"
     assert report["summary"]["warnings"] == ["new_revision_placement"]
 
 

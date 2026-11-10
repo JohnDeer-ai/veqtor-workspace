@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Snapshot one selected file, edit privately, then save it back to the same path."""
+"""Snapshot one selected file, edit privately, then replace it or publish a new file."""
 
 import hashlib
 import json
@@ -15,6 +15,13 @@ from veqtor_workspace.runner import Workspace
 def digest(path: Path) -> str:
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def current_digest(path: Path) -> str | None:
+    try:
+        return digest(path)
+    except FileNotFoundError:
+        return None
 
 
 class SaveConflict(Exception):
@@ -40,17 +47,19 @@ class DocumentTasks:
         with atomic_save(folder / "task.json") as temporary:
             temporary.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
 
-    def source(self, file: str) -> Path:
+    def source(self, file: str, *, existing: bool = True) -> Path:
         project = self.workspace.project
         if project is None and not self.workspace.dynamic:
             raise ValueError("Choose the document folder with --project to edit files in place.")
         selected = Path(file).expanduser()
         if self.workspace.dynamic and not selected.is_absolute():
             raise ValueError("Select the document by its absolute path.")
-        path = (project / selected if project else selected).resolve(strict=True)
+        selected = project / selected if project else selected
+        # A new destination must not follow an existing final symlink (including a dangling one).
+        path = selected.resolve(strict=True) if existing else selected.parent.resolve(strict=True) / selected.name
         if ((project and not path.is_relative_to(project)) or path.is_relative_to(self.workspace.root)
-                or not path.is_file()):
-            raise ValueError("Select a regular document inside the project folder, outside its private state.")
+                or (existing and not path.is_file())):
+            raise ValueError("Select a file outside private state and within the configured project, if any.")
         return path
 
     def start(self, file: str, read_paths: list[str] | None = None) -> dict:
@@ -82,7 +91,7 @@ class DocumentTasks:
             raise ValueError("Task must be inside the protected task directory.")
         data = json.loads((folder / "task.json").read_text(encoding="utf-8"))
         if (not data["saved"] and data.get("save_sha256")
-                and digest(self.source(data["file"])) == data["save_sha256"]):
+                and current_digest(Path(data.get("save_file", data["file"]))) == data["save_sha256"]):
             data.update(saved=True, saved_sha256=data["save_sha256"])
             try:
                 self._record(folder, data)
@@ -99,22 +108,27 @@ class DocumentTasks:
 
     def status(self, task_id: str) -> dict:
         data, _ = self.read(task_id)
-        current = digest(self.source(data["file"]))
+        target = Path(data.get("save_file", data["file"]))
+        current = current_digest(target)
         if data["saved"]:
             status = "saved" if current == data["saved_sha256"] else "saved_then_changed"
         else:
-            status = "not_saved" if current == data["original_sha256"] else "outcome_unknown"
-        return {"status": status, "file": data["file"], "saved": data["saved"],
+            baseline = data["original_sha256"] if target == Path(data["file"]) else None
+            status = "not_saved" if current == baseline else "outcome_unknown"
+        return {"status": status, "file": str(target), "saved": data["saved"],
                 "editing_closed": bool(data["saved"] or data.get("save_sha256")),
                 "state_recovery_pending": data.get("state_recovery_pending", False),
                 "detail": "Read-only status. Unknown means the current file differs; do not overwrite it to resolve uncertainty."}
 
-    def save(self, task_id: str) -> dict:
+    def save(self, task_id: str, file: str | None = None) -> dict:
         data, folder = self.read(task_id)
-        source = self.source(data["file"])
-        current_hash = digest(source)
+        target = self.source(file or data.get("save_file", data["file"]), existing=False)
+        if (data["saved"] or data.get("save_sha256")) and target != Path(data.get("save_file", data["file"])):
+            raise ValueError("Saving already targeted another file. Inspect status; start a new task for a different destination.")
+        new_file = target != Path(data["file"])
+        current_hash = current_digest(target)
         if data["saved"]:
-            return {"status": "already_saved", "file": str(source),
+            return {"status": "already_saved", "file": str(target),
                     "current_file_matches_saved": current_hash == data["saved_sha256"],
                     "state_recovery_pending": data.get("state_recovery_pending", False)}
         candidate = (folder / data["candidate"]).resolve(strict=True)
@@ -123,24 +137,31 @@ class DocumentTasks:
         candidate_hash = digest(candidate)
         if data.get("save_sha256") and candidate_hash != data["save_sha256"]:
             raise ValueError("The prepared result changed after saving started. Start a new task from the project file.")
-        if current_hash != data["original_sha256"]:
-            return {"status": "conflict", "file": str(source), "saved": False,
+        if new_file and (target.exists() or target.is_symlink()):
+            return {"status": "conflict", "file": str(target), "saved": False,
+                    "detail": "Destination already exists. Choose an unused name; no file was replaced."}
+        if not new_file and current_hash != data["original_sha256"]:
+            return {"status": "conflict", "file": str(target), "saved": False,
                     "detail": "The project file differs from the baseline. An interrupted save may already have completed. "
                               "Inspect status and start a new task from the current file."}
         try:
-            with atomic_save(source) as temporary:
+            with atomic_save(target, overwrite=not new_file) as temporary:
                 shutil.copyfile(candidate, temporary)
-                shutil.copymode(source, temporary)
+                shutil.copymode(candidate if new_file else target, temporary)
                 if digest(temporary) != candidate_hash:
                     raise ValueError("The task result changed while saving; the project file was not replaced.")
                 # Record the exact intended result BEFORE the irreversible replacement. An
                 # interrupted or disk-full final status write can then be recovered by its hash.
                 data["save_sha256"] = candidate_hash
+                data["save_file"] = str(target)
                 self._record(folder, data)
-                if digest(source) != data["original_sha256"]:
+                if not new_file and current_digest(target) != data["original_sha256"]:
                     raise SaveConflict
+        except FileExistsError:
+            return {"status": "conflict", "file": str(target), "saved": False,
+                    "detail": "Destination appeared during saving. It was not replaced. Inspect status before continuing."}
         except SaveConflict:
-            return {"status": "conflict", "file": str(source), "saved": False,
+            return {"status": "conflict", "file": str(target), "saved": False,
                     "detail": "The project file changed during preparation; start a new task."}
         data.update(saved=True, saved_sha256=candidate_hash)
         pending = False
@@ -148,7 +169,8 @@ class DocumentTasks:
             self._record(folder, data)
         except OSError:
             pending = True  # The document IS saved; never turn this into a generic failure.
-        return {"status": "saved", "file": str(source), "sha256": candidate_hash,
+        return {"status": "saved", "file": str(target), "sha256": candidate_hash,
                 "state_recovery_pending": pending,
                 "snapshot": str(folder / data["original"]),
-                "detail": "Replaced the file. Later script errors do not roll this save back."}
+                "detail": ("Created a new file; the source was not replaced." if new_file else "Replaced the file.")
+                          + " Later script errors do not roll this save back."}

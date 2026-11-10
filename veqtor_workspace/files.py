@@ -8,12 +8,13 @@ from pathlib import Path
 
 
 @contextmanager
-def atomic_save(destination: str | Path):
+def atomic_save(destination: str | Path, *, overwrite: bool = True):
     """Write and validate the yielded temporary path, then replace the destination.
 
     An exception or interruption before replacement leaves the destination intact.
     This does not validate content or protect writes that bypass this helper. A
     forcibly stopped process can leave a hidden temporary file, not a partial result.
+    With overwrite=False, publish only if the destination is still absent.
     """
     target = Path(destination)
     fd, name = tempfile.mkstemp(prefix=f".{target.stem}-", suffix=target.suffix, dir=target.parent)
@@ -21,6 +22,9 @@ def atomic_save(destination: str | Path):
     temporary = Path(name)
     try:
         yield temporary
-        os.replace(temporary, target)
+        if overwrite:
+            os.replace(temporary, target)
+        else:
+            os.link(temporary, target)  # Atomic creation: never replace a file that appeared meanwhile.
     finally:
         temporary.unlink(missing_ok=True)

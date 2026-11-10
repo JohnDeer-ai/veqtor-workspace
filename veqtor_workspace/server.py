@@ -16,22 +16,19 @@ from veqtor_workspace.runner import DEFAULT_CALL_SECONDS, DEFAULT_STATE, Workspa
 
 def build_server(workspace: Workspace) -> MCPServer:
     operations = Operations(workspace)
-    server = MCPServer("veqtor-workspace", version="0.0.11", instructions=(
-        "Experimental local document workspace. Start with workspace_info and follow its included recipe_text. "
-        "Write your own Python. Pass absolute paths selected by the user's task; no folder switching is needed in path mode. "
-        "For reading, pass read_paths to run_python. Start each new user editing task with document_task(action='start', file=...). "
-        "Use its task_id in run_python/check_docx; document_task(action='save', task_id=...) saves back to the same file. "
-        "Selected files and inputs/ are read-only to Python; edit in work/. "
-        "Files persist, Python variables do not. No network or personal environment is available. "
-        "Use the configured author for genuine Word revisions/comments. Call check_docx on DOCX results; "
-        "use render=True for a bounded preview when needed. Its limits are not legal or native Word acceptance. "
-        "Calls have a connection-level deadline and no queue. If saving is interrupted, read document_task(action='status') "
-        "before assuming success or failure. Reuse the user's existing authorization."
+    server = MCPServer("veqtor-workspace", version="0.0.12", instructions=(
+        "Local files and Python for model-directed document work. Start with workspace_info for the short workflow. "
+        "Choose your own editing and verification method. Helpers and check_docx are optional; "
+        "no clean diagnostic report is required to save. Preserve what the user did not ask to change. "
+        "Read selected paths with run_python(read_paths=...). For editing, document_task(start, file=...) "
+        "creates a protected snapshot and a writable candidate; pass task_id to run_python. "
+        "document_task(save, task_id=...) replaces the source after a conflict check; add file=... to create "
+        "a new output at an unused path. After an interrupted save, read document_task(status) before retrying."
     ))
 
     @server.tool(annotations=ToolAnnotations(readOnlyHint=True))
     async def workspace_info() -> dict:
-        """Return protected inputs, outputs, author and the full editing recipe; no separate file read needed."""
+        """Return the short workflow, author, runtime limits and a path to optional reference material."""
         return await operations.call("workspace_info", {})
 
     @server.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=False))
@@ -52,7 +49,7 @@ def build_server(workspace: Workspace) -> MCPServer:
         Python defaults to 255 seconds, leaving 15 seconds for the result; output is unbuffered.
         Cancellation stops the call's process group. Busy calls fail immediately, without a queue.
         Return concise evidence with print(); full stdout/stderr and the script are retained in .runs/.
-        A successful run is not document validation. Inspect outputs and use check_docx for DOCX.
+        Verify the requested result using a suitable method of your choice. check_docx is optional.
         """
         return await operations.call("run_python", {"code": code, "timeout_seconds": timeout_seconds,
                                                     "task_id": task_id, "read_paths": read_paths})
@@ -60,7 +57,7 @@ def build_server(workspace: Workspace) -> MCPServer:
     @server.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=False))
     async def document_task(action: Literal["start", "save", "status"], file: str | None = None,
                             task_id: str | None = None, read_paths: list[str] | None = None) -> dict:
-        """Start a new editing task or save its result back to the same project file.
+        """Snapshot a file, save the result in place or under a new name, or inspect save status.
 
         start(file=...): select an absolute file path, snapshot the latest saved file, return task_id and a writable
         candidate. Start once per NEW user task, not once per Python call. User edits
@@ -70,6 +67,10 @@ def build_server(workspace: Workspace) -> MCPServer:
         save(task_id=...): atomically replace the selected file, only if it still matches
         the snapshot. Review the candidate first. A conflict preserves the newer file;
         start again from it. This cannot see unsaved Word edits or merge simultaneous writes.
+        save(task_id=..., file=...): create the candidate at a new absolute path, in an
+        existing folder. An existing destination is never overwritten, even if it appears
+        during saving. The source is not replaced; the result is based on the task snapshot.
+        No check_docx call or clean report is required for either kind of save.
         Successful saves are not undone by later errors. Snapshots stay in the server's private state.
         status(task_id=...): read the outcome without saving. Use after any interrupted
         save: a missing reply does not prove that the document was not replaced.
@@ -85,19 +86,20 @@ def build_server(workspace: Workspace) -> MCPServer:
                    preview_side: Literal["original", "candidate"] = "candidate",
                    task_id: str | None = None, preview_query: str | None = None,
                    changes_start: int = 0) -> CallToolResult:
-        """Check a work/ DOCX candidate against its protected inputs/ original.
+        """Optional DOCX diagnostics and preview, not a mandatory save gate or an approval verdict.
 
         Pass task_id alone for the snapshot and result of the current task. In legacy
         copy mode provide original and candidate paths instead.
         Undoes the new tracked changes and new comments, then compares the whole document with the
-        original: untracked text (including formulas and embedded data), formatting, paragraph,
-        table and comment changes are reported with their location. Also checks new revision
-        authors, dates, ids and structure, preserved existing revisions and comments, and
-        unexpected package changes. Also reports advisory redline_quality findings when new
+        original: text, formatting, paragraph, table and comment mismatches are reported with
+        their location. This assumes additive tracked edits; accepting/rejecting revisions,
+        deleting comments, clean copies or ambiguous history can legitimately produce observations.
+        Interpret observations against the user's request; do not rewrite history to clear them.
+        errors means the comparison could not read the package/XML, not that all observations
+        are damage. Warnings and unchecked areas remain explicit. Also reports redline_quality when new
         simple replacements delete and reinsert equal word edges with identical formatting.
-        Review these fragments; no automatic repair or save blocking. The summary separates defects, warnings and
-        checks not performed. Not a Word-opening, layout or legal check; deliberate
-        accept/reject/delete needs separate review. With render=True, also render both files
+        Review relevant fragments; no automatic repair or save blocking. This is not a complete
+        difference report, Word-opening test or legal check. With render=True, also render both files
         once within a shared preview deadline (default 60 seconds). The entire check,
         including rendering, stays within the connection's call ceiling (normally 270 seconds).
         All pages are rendered; up to three images are returned per reply. For later pages,

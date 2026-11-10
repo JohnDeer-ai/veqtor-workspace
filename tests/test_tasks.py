@@ -28,7 +28,7 @@ def test_model_manual_model_rounds_use_latest_saved_baseline(project):
     task = tasks.start(str(source))
     candidate = Path(task["cwd"]) / task["candidate"]
     docx(candidate, [first])
-    assert not check_docx(Path(task["snapshot"]), candidate, ME)["summary"]["defects"]
+    assert not check_docx(Path(task["snapshot"]), candidate, ME)["summary"]["observations"]
     assert tasks.save(task["task_id"])["status"] == "saved"
     assert digest(Path(task["snapshot"])) == initial
 
@@ -40,7 +40,7 @@ def test_model_manual_model_rounds_use_latest_saved_baseline(project):
     candidate2 = Path(task2["cwd"]) / task2["candidate"]
     docx(candidate2, [first, manual, para(run("Notice: "), rev("del", "3", ME, run("10", "delText")),
                                          rev("ins", "4", ME, run("20")), run(" days"))])
-    assert not check_docx(Path(task2["snapshot"]), candidate2, ME)["summary"]["defects"]
+    assert not check_docx(Path(task2["snapshot"]), candidate2, ME)["summary"]["observations"]
     assert tasks.save(task2["task_id"])["status"] == "saved"
     assert digest(source) == digest(candidate2)
     assert digest(Path(task2["snapshot"])) == user_version
@@ -143,6 +143,75 @@ def test_task_path_boundaries(project, tmp_path):
         Workspace(outside.parent, workspace.python, ME, workspace.project)
 
 
+def test_save_as_keeps_source_and_status_tracks_new_destination(project):
+    workspace, tasks = project
+    source = workspace.project / "original.txt"
+    source.write_text("baseline")
+    task = tasks.start(str(source))
+    (Path(task["cwd"]) / task["candidate"]).write_text("result")
+    target = source.with_name("новая версия.txt")
+    source.write_text("user's newer source")
+    saved = tasks.save(task["task_id"], str(target))
+    assert saved["file"] == str(target) and saved["status"] == "saved"
+    assert source.read_text() == "user's newer source" and target.read_text() == "result"
+    assert Path(task["snapshot"]).read_text() == "baseline"
+    source.unlink()  # A completed save-as no longer needs the old source for status/recovery.
+    assert tasks.status(task["task_id"])["file"] == str(target)
+    assert tasks.save(task["task_id"])["status"] == "already_saved"
+    with pytest.raises(ValueError, match="another file"):
+        tasks.save(task["task_id"], str(target.with_name("another.txt")))
+    target.write_text("later user edit")
+    assert tasks.status(task["task_id"])["status"] == "saved_then_changed"
+    assert not tasks.save(task["task_id"])["current_file_matches_saved"]
+    assert target.read_text() == "later user edit"
+
+
+@pytest.mark.parametrize("occupied", ["before", "during", "symlink"])
+def test_save_as_never_overwrites_existing_destination(project, monkeypatch, occupied):
+    workspace, tasks = project
+    source, target = workspace.project / "source.txt", workspace.project / "new.txt"
+    source.write_text("source")
+    task = tasks.start(str(source))
+    (Path(task["cwd"]) / task["candidate"]).write_text("model output")
+    if occupied == "during":
+        record = DocumentTasks._record
+
+        def concurrent_create(folder, data):
+            record(folder, data)
+            if not data["saved"]:
+                target.write_text("someone else's file")
+
+        monkeypatch.setattr(DocumentTasks, "_record", staticmethod(concurrent_create))
+    elif occupied == "symlink":
+        target.symlink_to(source.with_name("missing.txt"))
+    else:
+        target.write_text("someone else's file")
+    assert tasks.save(task["task_id"], str(target))["status"] == "conflict"
+    assert source.read_text() == "source"
+    if occupied == "symlink":
+        assert target.is_symlink() and not target.exists()
+    else:
+        assert target.read_text() == "someone else's file"
+    assert not list(target.parent.glob(".new-*.txt"))
+    if occupied == "during":
+        assert tasks.status(task["task_id"])["status"] == "outcome_unknown"
+
+
+def test_saved_legacy_task_cannot_be_redirected(project):
+    workspace, tasks = project
+    source = workspace.project / "old.txt"
+    source.write_text("original")
+    task = tasks.start(str(source))
+    tasks.save(task["task_id"])
+    metadata = Path(task["cwd"]) / "task.json"
+    data = json.loads(metadata.read_text())
+    del data["save_file"]  # A task saved by 0.0.11 or earlier.
+    metadata.write_text(json.dumps(data))
+    assert tasks.status(task["task_id"])["status"] == "saved"
+    with pytest.raises(ValueError, match="another file"):
+        tasks.save(task["task_id"], str(source.with_name("not-created.txt")))
+
+
 def test_project_workflow_over_mcp(project):
     workspace, _ = project
     source = docx(workspace.project / "Contract.docx", [para(run("Pay within 30 days"))])
@@ -183,7 +252,7 @@ print("edited")
             result = await call("run_python", {"task_id": task["task_id"], "code": code})
             assert result["stdout"] == "edited\n", result
             check = await call("check_docx", {"task_id": task["task_id"]})
-            assert not check["summary"]["defects"], check
+            assert not check["summary"]["observations"], check
             saved = await call("document_task", {"action": "save", "task_id": task["task_id"]})
             assert saved["status"] == "saved"
             assert digest(source) == saved["sha256"]

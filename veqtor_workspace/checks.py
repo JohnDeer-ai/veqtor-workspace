@@ -592,19 +592,19 @@ def _package_issues(before, after, left, right):
 def check_docx(original: Path, candidate: Path, author: str, changes_start: int = 0) -> dict:
     checks = []
 
-    def add(name, ok, detail, problem="failed"):
+    def add(name, ok, detail, problem="observation"):
         checks.append({"check": name, "status": "passed" if ok else problem, "detail": detail})
 
     try:
         before, left = _package(original)
         after, right = _package(candidate)
     except CheckLimit as exc:
-        return {"status": "not_checked", "summary": {"defects": [], "warnings": [],
+        return {"status": "not_checked", "summary": {"errors": [], "observations": [], "warnings": [],
                 "not_checked": ["docx_preservation"]},
                 "checks": [{"check": "docx_preservation", "status": "not_checked", "detail": str(exc)}]}
     except (OSError, ValueError, ET.XMLSyntaxError, BadZipFile, RuntimeError) as exc:
-        return {"status": "issues_found", "summary": {"defects": ["package_and_xml"], "warnings": [], "not_checked": []},
-                "checks": [{"check": "package_and_xml", "status": "failed", "detail": str(exc)}]}
+        return {"status": "error", "summary": {"errors": ["package_and_xml"], "observations": [], "warnings": [], "not_checked": []},
+                "checks": [{"check": "package_and_xml", "status": "error", "detail": str(exc)}]}
     add("package_and_xml", True, "ZIP members readable; XML well-formed. This is not an XSD or Word-opening check.")
     changed = sorted(n for n in before.keys() | after.keys() if before.get(n) != after.get(n))
 
@@ -680,11 +680,11 @@ def check_docx(original: Path, candidate: Path, author: str, changes_start: int 
         checks.append({"check": "revision_origins", "status": "not_checked", "detail": totals["origins"]})
     checks.append({"check": "layout_and_legal_intent", "status": "not_checked",
                    "detail": "Open/render separately. Correct requested wording, layout, fields and legal meaning need review."})
-    group = {s: [c["check"] for c in checks if c["status"] == s] for s in ("failed", "warning", "not_checked")}
+    group = {s: [c["check"] for c in checks if c["status"] == s] for s in ("observation", "warning", "not_checked")}
     from veqtor_workspace.reading import change_summary
 
-    return {"status": "issues_found" if group["failed"] else "checked_with_limits",
-            "summary": {"defects": group["failed"], "warnings": group["warning"], "not_checked": group["not_checked"]},
+    return {"status": "diagnostic",
+            "summary": {"errors": [], "observations": group["observation"], "warnings": group["warning"], "not_checked": group["not_checked"]},
             "checks": checks, "changed_parts": changed,
             "original_sha256": hashlib.sha256(original.read_bytes()).hexdigest(),
             "candidate_sha256": hashlib.sha256(candidate.read_bytes()).hexdigest(),

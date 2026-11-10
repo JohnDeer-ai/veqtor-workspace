@@ -168,7 +168,7 @@ except FileNotFoundError: print('Only the missing material is unavailable')
             check = await client.call_tool("check_docx", {"task_id": task["task_id"], "render": True})
             assert not check.is_error, check
             report = json.loads(check.content[0].text)
-            assert report["summary"]["defects"] == []
+            assert report["summary"]["observations"] == []
             assert report["preview"]["status"] == "rendered"
             assert "not Microsoft Word" in report["preview"]["page_numbering"]
             reused = await client.call_tool("check_docx", {"task_id": task["task_id"],

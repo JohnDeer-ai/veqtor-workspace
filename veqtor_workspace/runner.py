@@ -91,7 +91,7 @@ class Workspace:
 
     def info(self) -> dict:
         return {
-            "prototype": "0.0.11", "author": self.author,
+            "prototype": "0.0.12", "author": self.author,
             "access_mode": "paths" if self.dynamic else "legacy_folder",
             "read_paths": [str(p) for p in self.read_paths],
             "project_folder": str(self.project) if self.project else None,
@@ -100,8 +100,10 @@ class Workspace:
             "outputs": self.outputs(),
             "recipe": str(self.package / "veqtor_workspace/RECIPE.md"),
             "recipe_text": (self.package / "veqtor_workspace/RECIPE.md").read_text(encoding="utf-8"),
+            "reference": str(self.package / "veqtor_workspace/REFERENCE.md"),
             "execution": "Fresh Python process per call; files persist. Project and inputs read-only, work writable, no network. "
-                         "For in-place editing use document_task(start), run_python/check_docx with task_id, then document_task(save).",
+                         "Use document_task(start), run_python with task_id, then document_task(save); "
+                         "file=... on save creates a new output. Diagnostics and preview are optional.",
             "limits": {"default_timeout_seconds": self.script_timeout_seconds,
                        "max_timeout_seconds": self.call_timeout_seconds,
                        "scope": "Whole MCP call, including setup, checks and saving; no disabled deadline or queue.",

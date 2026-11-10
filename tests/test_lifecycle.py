@@ -28,8 +28,10 @@ def prepared(project):
     return workspace, tasks, source, task, candidate
 
 
-def test_final_status_write_failure_is_reported_as_saved_and_recovers(project, monkeypatch):
+@pytest.mark.parametrize("save_as", [False, True])
+def test_final_status_write_failure_is_reported_as_saved_and_recovers(project, monkeypatch, save_as):
     w, tasks, source, task, _ = prepared(project)
+    target = source.with_name("new result.txt") if save_as else source
     record = DocumentTasks._record
 
     def full_after_replace(folder, data):
@@ -39,9 +41,11 @@ def test_final_status_write_failure_is_reported_as_saved_and_recovers(project, m
 
     with monkeypatch.context() as patch:
         patch.setattr(DocumentTasks, "_record", staticmethod(full_after_replace))
-        result = tasks.save(task["task_id"])
+        result = tasks.save(task["task_id"], str(target) if save_as else None)
         assert result["status"] == "saved" and result["state_recovery_pending"]
-        assert source.read_text() == "after"
+        assert target.read_text() == "after"
+        if save_as:
+            assert source.read_text() == "before"
         restarted = DocumentTasks(w)
         with pytest.raises(ValueError, match="Start a new task"):
             restarted.context(task["task_id"], writing=True)
@@ -49,10 +53,10 @@ def test_final_status_write_failure_is_reported_as_saved_and_recovers(project, m
         assert restarted.status(task["task_id"])["status"] == "saved"
     # Recovery is written once storage works again, so later external edits remain distinguishable.
     assert tasks.status(task["task_id"])["state_recovery_pending"] is False
-    source.write_text("user's later version")
+    target.write_text("user's later version")
     assert tasks.status(task["task_id"])["status"] == "saved_then_changed"
     assert tasks.save(task["task_id"])["current_file_matches_saved"] is False
-    assert source.read_text() == "user's later version"
+    assert target.read_text() == "user's later version"
 
 
 def test_failed_intent_write_prevents_replacement(project, monkeypatch):
@@ -80,8 +84,10 @@ def inject_worker(monkeypatch, prelude):
 
 
 @pytest.mark.parametrize("after_replace", [False, True])
-def test_hard_worker_exit_before_or_after_replacement_recovers(project, monkeypatch, after_replace):
+@pytest.mark.parametrize("save_as", [False, True])
+def test_hard_worker_exit_before_or_after_replacement_recovers(project, monkeypatch, after_replace, save_as):
     w, _, source, task, _ = prepared(project)
+    target = source.with_name("new result.txt") if save_as else source
     prelude = f'''
 import os
 from veqtor_workspace.tasks import DocumentTasks
@@ -96,16 +102,21 @@ DocumentTasks._record = staticmethod(interrupted)
     with monkeypatch.context() as patch:
         inject_worker(patch, prelude)
         with pytest.raises(ValueError, match="worker stopped"):
-            asyncio.run(Operations(w).call("document_task", {"action": "save", "task_id": task["task_id"]}))
+            asyncio.run(Operations(w).call("document_task", {"action": "save", "task_id": task["task_id"],
+                                                           "file": str(target) if save_as else None}))
     restored = DocumentTasks(w)
-    assert source.read_text() == ("after" if after_replace else "before")
+    if save_as:
+        assert source.read_text() == "before"
+        assert target.exists() == after_replace
+    else:
+        assert source.read_text() == ("after" if after_replace else "before")
     status = restored.status(task["task_id"])
     assert status["status"] == ("saved" if after_replace else "not_saved")
     assert status["editing_closed"]
     with pytest.raises(ValueError, match="Start a new task"):
         restored.context(task["task_id"], writing=True)
     assert restored.save(task["task_id"])["status"] == ("already_saved" if after_replace else "saved")
-    assert source.read_text() == "after"
+    assert target.read_text() == "after"
 
 
 @pytest.mark.parametrize("operation", ["workspace_info", "document_task", "check_docx"])
@@ -293,7 +304,7 @@ def test_cancel_large_reply_frees_connection(project, monkeypatch, stream):
                     await asyncio.gather(children[0].stdout.read(), children[0].stderr.read())
                 await request
         response = await Operations(w).call("workspace_info", {})
-        assert response["prototype"] == "0.0.11"
+        assert response["prototype"] == "0.0.12"
     asyncio.run(exercise())
 
 
