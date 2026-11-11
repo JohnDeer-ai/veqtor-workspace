@@ -115,6 +115,18 @@ def test_word_native_edits_pass(tmp_path, name):
     assert report["status"] == "diagnostic"
 
 
+def test_successful_report_has_no_hypothetical_warnings(tmp_path):
+    _, report = check(tmp_path, *NATIVE["replace"])
+    checks = {c["check"]: c for c in report["checks"]}
+    assert checks["new_revision_structure"] == {"check": "new_revision_structure", "status": "passed"}
+    assert checks["new_revision_placement"] == {"check": "new_revision_placement", "status": "passed"}
+    assert checks["new_revision_authors"]["detail"] == {"new_revisions": 2}
+    assert report["changes"]["total"] == 1
+    assert report["original_sha256"] != report["candidate_sha256"]
+    assert "Native Word opening/accept-reject" in checks["layout_and_legal_intent"]["detail"]
+    assert report["summary"]["not_checked"] == ["layout_and_legal_intent"]
+
+
 DEFECTS = {
     "untracked_text": ([para(run("Pay within 10 days"))], [para(run("Pay within 70 days"))], "untracked_changes"),
     "untracked_number_beside_new_paragraph": (
@@ -169,6 +181,9 @@ def test_defects_are_reported(tmp_path, name):
     assert report["status"] == "diagnostic"
     assert expected in report["summary"]["observations"]
     assert "layout_and_legal_intent" in report["summary"]["not_checked"]
+    if expected == "new_revision_structure":
+        detail = next(c["detail"] for c in report["checks"] if c["check"] == expected)
+        assert detail["issues"] and "repaired copy" in detail["note"]
 
 
 # Word 16.95 opens these and accepts or rejects them like the native forms: a warning, not a defect.
@@ -189,6 +204,8 @@ def test_placement_is_a_warning_not_a_defect(tmp_path, name):
     assert not failed, report
     assert report["status"] == "diagnostic"
     assert report["summary"]["warnings"] == ["new_revision_placement"]
+    detail = next(c["detail"] for c in report["checks"] if c["check"] == "new_revision_placement")
+    assert detail["placements"] and "Compatibility warning" in detail["note"]
 
 
 def test_untracked_change_is_located(tmp_path):

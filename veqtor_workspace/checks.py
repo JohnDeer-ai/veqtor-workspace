@@ -593,7 +593,15 @@ def check_docx(original: Path, candidate: Path, author: str, changes_start: int 
     checks = []
 
     def add(name, ok, detail, problem="observation"):
-        checks.append({"check": name, "status": "passed" if ok else problem, "detail": detail})
+        if ok:
+            # Keep evidence/counters, but do not present hypothetical warnings on success.
+            detail = ({key: value for key, value in detail.items()
+                       if key not in ("note", "scope") and value not in ([], {})}
+                      if isinstance(detail, dict) else None)
+        item = {"check": name, "status": "passed" if ok else problem}
+        if detail:
+            item["detail"] = detail
+        checks.append(item)
 
     try:
         before, left = _package(original)
@@ -679,7 +687,7 @@ def check_docx(original: Path, candidate: Path, author: str, changes_start: int 
     if totals["origins"]:
         checks.append({"check": "revision_origins", "status": "not_checked", "detail": totals["origins"]})
     checks.append({"check": "layout_and_legal_intent", "status": "not_checked",
-                   "detail": "Open/render separately. Correct requested wording, layout, fields and legal meaning need review."})
+                   "detail": "Native Word opening/accept-reject, XSD/relationship validation, layout, fields and legal meaning are not checked."})
     group = {s: [c["check"] for c in checks if c["status"] == s] for s in ("observation", "warning", "not_checked")}
     from veqtor_workspace.reading import change_summary
 

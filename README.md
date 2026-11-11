@@ -117,6 +117,8 @@ excerpts (`changes`, paged with `changes_start`) from the current task's snapsho
   not a mandatory step, a full difference report or an approval verdict. The summary has
   `errors` (the comparison could not read the package/XML), `observations` (comparison
   mismatches or revision metadata/structure notices), `warnings` and `not_checked`.
+  Passed checks keep only their status and useful counters or metadata; explanations
+  accompany findings. Unchecked areas remain explicit even when no findings are present.
   Observations need interpretation against the user's task: authorized acceptance,
   rejection, comment deletion and clean copies may intentionally change the baseline.
   Ambiguous old/new metadata can also produce false observations. Concrete unexpected
