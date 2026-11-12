@@ -13,6 +13,8 @@ import threading
 import uuid
 from pathlib import Path
 
+from veqtor_workspace.preview import renderer_info
+
 MAX_REPLY = 12_000
 DEFAULT_CALL_SECONDS = 270
 DEFAULT_STATE = Path.home() / "Library/Application Support/Veqtor Workspace"
@@ -91,7 +93,7 @@ class Workspace:
 
     def info(self) -> dict:
         return {
-            "prototype": "0.0.13", "author": self.author,
+            "prototype": "0.0.14", "author": self.author,
             "access_mode": "paths" if self.dynamic else "legacy_folder",
             "read_paths": [str(p) for p in self.read_paths],
             "project_folder": str(self.project) if self.project else None,
@@ -108,7 +110,7 @@ class Workspace:
                        "max_timeout_seconds": self.call_timeout_seconds,
                        "scope": "Whole MCP call, including setup, checks and saving; no disabled deadline or queue.",
                        "bytes_per_written_file": None, "reply_bytes_per_stream": MAX_REPLY},
-            "preview": {"configured": self.preview_config.is_file(), "config": str(self.preview_config),
+            "preview": {**renderer_info(self.preview_config), "config": str(self.preview_config),
                         "usage": "check_docx(render=True); reuse preview_id with preview_pages for more pages",
                         "default_timeout_seconds": min(60, self.call_timeout_seconds),
                         "max_timeout_seconds": self.call_timeout_seconds, "max_images_per_reply": 3},
@@ -205,4 +207,16 @@ class Workspace:
                 result[kind] = stream.read(MAX_REPLY).decode("utf-8", errors="replace")
             result[f"{kind}_truncated"] = path.stat().st_size > MAX_REPLY
             result[f"{kind}_path"] = str(path.relative_to(self.root))
+        if result["stdout_truncated"] or result["stderr_truncated"]:
+            recovery = (
+                "Full logs are private in calls without task_id; read only the needed source range in the next call. "
+                if self.dynamic and self.root == self.private_root else
+                "Read stdout_path/stderr_path relative to this cwd in portions of up to 2,000 characters; "
+                "reuse the same task_id if present. "
+            )
+            result["output_hint"] = (
+                "Output is incomplete. " + recovery +
+                "For DOCX, read_docx returns next_cursor: pass it as cursor with the same options. "
+                "Do not repeat an editing script just to recover its output."
+            )
         return result

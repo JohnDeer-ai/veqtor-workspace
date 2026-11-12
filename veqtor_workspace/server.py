@@ -16,7 +16,7 @@ from veqtor_workspace.runner import DEFAULT_CALL_SECONDS, DEFAULT_STATE, Workspa
 
 def build_server(workspace: Workspace) -> MCPServer:
     operations = Operations(workspace)
-    server = MCPServer("veqtor-workspace", version="0.0.13", instructions=(
+    server = MCPServer("veqtor-workspace", version="0.0.14", instructions=(
         "Local files and Python for model-directed document work. Start with workspace_info for the short workflow. "
         "Choose your own editing and verification method. Helpers and check_docx are optional; "
         "no clean diagnostic report is required to save. Preserve what the user did not ask to change. "

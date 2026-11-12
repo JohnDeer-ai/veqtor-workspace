@@ -69,6 +69,43 @@ def test_timeout_and_bounded_output(workspace):
     assert (workspace.root / result["stdout_path"]).stat().st_size > 12000
 
 
+def test_truncated_output_hint_recovers_both_streams_without_repeating_edit(project):
+    workspace, tasks = project
+    source = workspace.project / "source.txt"
+    source.write_text("original")
+    task = tasks.start(str(source))
+    context, _ = tasks.context(task["task_id"], writing=True)
+    result = context.run(f"""
+import sys
+from pathlib import Path
+Path({task['candidate']!r}).write_text('edited once')
+print('я🙂' * 4000)
+print('error context ' * 1000, file=sys.stderr)
+""")
+    assert result["exit_code"] == 0
+    assert result["stdout_truncated"] and result["stderr_truncated"]
+    assert "same task_id" in result["output_hint"]
+    assert "next_cursor" in result["output_hint"]
+    for kind, expected in (("stdout", 'я🙂' * 4000 + '\n'), ("stderr", 'error context ' * 1000 + '\n')):
+        assert (context.root / result[f"{kind}_path"]).read_text() == expected
+        portion = context.run(f"from pathlib import Path; print(Path({result[f'{kind}_path']!r})"
+                              ".read_text(encoding='utf-8')[2000:4000], end='')")
+        assert portion["exit_code"] == 0 and portion["stdout"] == expected[2000:4000]
+        assert not portion["stdout_truncated"] and "output_hint" not in portion
+    assert (context.root / task["candidate"]).read_text() == "edited once"
+    assert source.read_text() == "original"
+
+
+def test_plain_read_hint_uses_source_pagination_not_private_logs(tmp_path):
+    workspace = Workspace(tmp_path / "state", Path(sys.executable), "Ilya", dynamic=True)
+    result = workspace.run("print('text' * 4000)")
+    assert result["stdout_truncated"]
+    assert "logs are private" in result["output_hint"] and "next_cursor" in result["output_hint"]
+    probe = workspace.run(f"from pathlib import Path; Path({result['stdout_path']!r}).read_text()")
+    assert "PermissionError" in probe["stderr"]
+    assert "output_hint" not in workspace.run("print('small output')")
+
+
 def test_outputs_skip_hidden_and_word_owner_files(workspace):
     (workspace.root / "work/result.docx").write_bytes(b"x")
     (workspace.root / "work/~$result.docx").write_bytes(b"owner")

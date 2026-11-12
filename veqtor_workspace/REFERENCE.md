@@ -23,7 +23,8 @@ Use whole words/numbers for readable redlines, with character edits when appropr
 A substantially rewritten phrase can use a whole-phrase replacement. Preserve word boundaries.
 
 Text PDFs can be read with the bundled `pypdf`. Image-only scans need OCR, which is not bundled.
-Print relevant evidence in manageable portions; the runner reports when its reply was truncated.
+Print relevant evidence in manageable portions. If truncated, follow `output_hint` to continue
+reading; do not repeat edits to recover output. `read_docx` already supports `next_cursor`.
 
 ## Direct OOXML editing examples
 

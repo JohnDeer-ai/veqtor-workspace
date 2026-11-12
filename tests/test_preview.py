@@ -16,10 +16,84 @@ from mcp import StdioServerParameters
 from mcp.client import Client
 from mcp.client.stdio import stdio_client
 
-from veqtor_workspace.preview import render_pair
+from veqtor_workspace.preview import render_pair, renderer_info
+from veqtor_workspace.runner import Workspace
 
 pytestmark = pytest.mark.skipif(platform.system() != "Darwin", reason="macOS renderer restrictions")
 PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWZkAAAAASUVORK5CYII="
+
+
+@pytest.fixture
+def installed_renderer(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
+    runtime = Path.home() / ".cache/codex-runtimes/codex-primary-runtime"
+    python = runtime / "dependencies/python/bin/python3"
+    python.parent.mkdir(parents=True)
+    python.symlink_to(sys.executable)
+    script = runtime / "plugins/openai-primary-runtime/plugins/documents/skills/documents/render_docx.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("import sys,base64;from pathlib import Path\n"
+                      "p=Path(sys.argv[sys.argv.index('--output_dir')+1]);p.mkdir(parents=True)\n"
+                      f"(p/'page-1.png').write_bytes(base64.b64decode({PNG!r}))\n")
+    return script
+
+
+@pytest.mark.parametrize("configuration", ["missing", "obsolete", "custom"])
+def test_renderer_discovery_and_info_match_actual_render(tmp_path, installed_renderer, configuration):
+    config = tmp_path / "preview.json"
+    expected = installed_renderer
+    if configuration == "custom":
+        expected = tmp_path / "custom.py"
+        expected.write_bytes(installed_renderer.read_bytes())
+    if configuration != "missing":
+        script = expected if configuration == "custom" else (
+            Path.home() / ".codex/plugins/cache/openai-primary-runtime/documents/26.1.1/skills/documents/render_docx.py")
+        config.write_text(json.dumps({"python": sys.executable, "script": str(script)}))
+    before = config.read_bytes() if config.exists() else None
+    workspace = Workspace(tmp_path / "state", Path(sys.executable), "Ilya", preview_config=config)
+    original, candidate = workspace.root / "inputs/source.docx", workspace.root / "work/result.docx"
+    Document().save(original)
+    candidate.write_bytes(original.read_bytes())
+    info = workspace.info()["preview"]
+    assert info["configured"] is True and info["renderer"] == str(expected)
+    result = render_pair(original, candidate, tmp_path / "previews", config)
+    assert result["status"] == "rendered" and result["renderer"] == info["renderer"]
+    assert (config.read_bytes() if config.exists() else None) == before
+
+
+def test_latest_installed_plugin_used_if_stable_script_missing(tmp_path, installed_renderer):
+    cache = Path.home() / ".codex/plugins/cache/openai-primary-runtime/documents"
+    for version in ("26.9.1", "26.10.1"):
+        script = cache / version / "skills/documents/render_docx.py"
+        script.parent.mkdir(parents=True)
+        script.write_bytes(installed_renderer.read_bytes())
+    installed_renderer.unlink()
+    assert renderer_info(tmp_path / "absent.json")["renderer"] == str(script)
+    script.unlink()
+    assert "26.9.1" in renderer_info(tmp_path / "absent.json")["renderer"]
+
+
+@pytest.mark.parametrize("failure", ["missing_custom", "missing_python", "non_executable", "malformed", "uninstalled"])
+def test_unavailable_renderer_is_not_advertised(tmp_path, installed_renderer, failure):
+    config = tmp_path / "preview.json"
+    settings = {"python": sys.executable, "script": str(installed_renderer)}
+    if failure == "missing_custom":
+        settings["script"] = str(tmp_path / "missing_custom.py")
+    elif failure == "missing_python":
+        settings["python"] = str(tmp_path / "missing-python")
+    elif failure == "non_executable":
+        python = tmp_path / "not-executable"
+        python.write_text("not an executable")
+        settings["python"] = str(python)
+    elif failure == "uninstalled":
+        installed_renderer.unlink()
+    config.write_text("{" if failure == "malformed" else json.dumps(settings))
+    workspace = Workspace(tmp_path / "state", Path(sys.executable), "Ilya", preview_config=config)
+    assert workspace.info()["preview"]["configured"] is False
+    result = render_pair(tmp_path / "unused-a.docx", tmp_path / "unused-b.docx", tmp_path / "preview", config)
+    assert result["status"] == "not_available" and "detail" in result
+    assert not (tmp_path / "preview").exists()
+    assert workspace.run("print('editing remains available')")["stdout"] == "editing remains available\n"
 
 
 @pytest.fixture(params=["separate_folders", "same_folder"])

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Bounded previews using an administrator-configured, existing DOCX renderer.
+"""Bounded previews using a configured or installed Codex DOCX renderer.
 
 No editing engine or Word UI automation. The same function is usable without MCP.
 """
@@ -24,6 +24,35 @@ DEFAULT_SECONDS = 60
 MAX_IMAGES = 3
 PAGE_NUMBERING = "Preview pages (1-based), not Microsoft Word page numbers; pagination may differ."
 CHANGE_MEANING = "Pages with visual differences, including pagination shifts; not a list of edited clauses."
+
+
+def renderer_info(config: Path) -> dict:
+    """Resolve trusted local tooling without executing it or rewriting configuration."""
+    runtime = Path.home() / ".cache/codex-runtimes/codex-primary-runtime"
+    cache = Path.home() / ".codex/plugins/cache/openai-primary-runtime/documents"
+    stable_script = runtime / "plugins/openai-primary-runtime/plugins/documents/skills/documents/render_docx.py"
+    try:
+        try:
+            settings = json.loads(config.read_text())
+        except FileNotFoundError:
+            settings = {"python": str(runtime / "dependencies/python/bin/python3"), "script": str(stable_script)}
+        python = Path(settings["python"]).expanduser().resolve(strict=True)
+        script = Path(settings["script"]).expanduser().absolute()
+        # Only a missing known Codex renderer may fall back. A configured custom
+        # renderer is never silently replaced; model arguments cannot select one.
+        codex_script = script == stable_script or (script.is_relative_to(cache) and re.fullmatch(
+            r"\d+(?:\.\d+)*/skills/documents/render_docx\.py", script.relative_to(cache).as_posix()))
+        if not script.is_file() and codex_script:
+            installed = [p for p in cache.glob("*/skills/documents/render_docx.py")
+                         if re.fullmatch(r"\d+(?:\.\d+)*", p.parts[-4])]
+            installed.sort(key=lambda p: tuple(map(int, p.parts[-4].split("."))), reverse=True)
+            script = next((p for p in [stable_script, *installed] if p.is_file()), script)
+        script = script.resolve(strict=True)
+        if not python.is_file() or not os.access(python, os.X_OK) or not script.is_file() or not os.access(script, os.R_OK):
+            raise ValueError("Preview needs an executable Python and a readable renderer script.")
+        return {"configured": True, "python": str(python), "renderer": str(script)}
+    except (OSError, KeyError, ValueError, TypeError) as exc:
+        return {"configured": False, "detail": f"Preview renderer is not available: {exc}"}
 
 
 def search_pages(result: dict, query: str, side: str) -> dict:
@@ -109,13 +138,10 @@ def render_pair(original: Path, candidate: Path, output: Path, config: Path,
               "visual_review": "not_performed", "images": [],
               "limits": "LibreOffice preview, not native Word. Nested revisions may display differently; "
                         "review complex history in Word. Comments and accept/reject are not tested."}
-    try:
-        settings = json.loads(config.read_text())
-        python, script = (Path(settings[k]).expanduser().resolve(strict=True) for k in ("python", "script"))
-        if not python.is_file() or not script.is_file():
-            raise ValueError("Preview configuration must name a Python executable and renderer script.")
-    except (OSError, KeyError, ValueError, TypeError) as exc:
-        return {**result, "detail": f"Preview renderer is not configured: {exc}"}
+    renderer = renderer_info(config)
+    if not renderer["configured"]:
+        return {**result, "detail": renderer["detail"]}
+    python, script = renderer["python"], renderer["renderer"]
 
     started = time.monotonic()
     directory = output / uuid.uuid4().hex[:12]

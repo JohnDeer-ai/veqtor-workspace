@@ -110,7 +110,9 @@ excerpts (`changes`, paged with `changes_start`) from the current task's snapsho
   not undo it: inspect status before assuming success or failure. There is no
   written-file size cap. Actual disk space, memory,
   libraries and model context still bound practical workloads. Output replies are bounded; full logs and
-  scripts remain in `.runs/` and are read-only to task code.
+  scripts remain in `.runs/` and are read-only to task code. Truncated replies include
+  `output_hint`: read task logs in small portions, or narrow the source read when running
+  without a task (its logs stay private). DOCX reading already supports `next_cursor`.
 - The checker undoes the new tracked changes and new comments and compares the whole
   document with the original, so untracked text, formatting, paragraph, table and
   comment mismatches are reported with their location. It is an optional diagnostic,
@@ -166,18 +168,22 @@ are not bundled. A custom `--python` runtime may provide additional libraries.
 
 ## Optional preview setup
 
-Configure an already installed renderer once for this Mac in
-`~/Library/Application Support/Veqtor Workspace/preview.json`, outside writable task
-folders. Every selected document uses it, including the Claude extension. An explicit
-`--preview-config` can select another config; legacy local `.preview.json` remains supported:
+The installed Codex document renderer is discovered automatically on this Mac, including
+from the Claude extension. A missing version-specific Codex script falls back to the
+runtime path without a version number, then to the latest installed document plugin.
+`workspace_info` checks the Python executable and script; rendering still reports conversion failures.
+
+To use a custom renderer, configure
+`~/Library/Application Support/Veqtor Workspace/preview.json`, outside writable task folders.
+Valid custom paths are preserved; a missing custom script is reported, never silently replaced.
+An explicit `--preview-config` can select another config; legacy local `.preview.json` remains supported:
 
 ```json
 {"python": "/absolute/path/to/render-python", "script": "/absolute/path/to/render_docx.py"}
 ```
 
-The pilot does not install or bundle an office suite. This machine uses the bundled
-Codex document renderer; the same paths also work for the Claude extension on this Mac.
-Without it, previews explicitly report `not_available` and editing still works.
+The pilot does not install or bundle an office suite or rewrite renderer configuration.
+Without a usable renderer, previews explicitly report `not_available` and editing still works.
 The fixed converter runs separately from model-written code, without inherited
 credentials or network access and with both input documents protected. It has broader
 local read access than task Python so the existing converter and fonts can work.
