@@ -3,7 +3,7 @@
   "manifest_version": "0.4",
   "name": "veqtor-workspace-pilot",
   "display_name": "Veqtor Workspace (pilot)",
-  "version": "0.0.15",
+  "version": "0.0.16",
   "description": "Edit selected local documents by absolute path with model-written Python, snapshots and optional diagnostics.",
   "long_description": "Give the model the file or folder paths in your request. No document folder setting is required. Each editing task snapshots the latest saved file in private application state, edits a copy and saves in place after a conflict check or to a new output path. Python reads only selected paths and writes task copies; no network. DOCX diagnostics and preview are optional; the model chooses how to verify the requested result. Save Word changes before starting.",
   "author": {

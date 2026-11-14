@@ -37,6 +37,7 @@ New revisions/comments can use the configured author (`os.environ["VEQTOR_AUTHOR
 Do not label local time with Z; a deliberately specified date remains your choice.
 Diagnostics warn about missing/invalid dates, absent timezones and dates over five minutes
 ahead of `checked_at_utc`, only for new revisions/comments. They do not rewrite dates or gate saving.
+Timezone spelling must be `Z` or `+/-HH:MM`, with minutes 00–59 and a maximum offset of 14:00.
 Preserve unrelated earlier text, authors, dates and history.
 When splitting runs, preserve mixed formatting and use `xml:space="preserve"` on text pieces
 with leading/trailing spaces. Word otherwise drops those spaces.
@@ -87,6 +88,8 @@ Search has no OCR or cross-page phrase matching; no match does not prove absence
 Inspect relevant output to the extent needed for the task. Preview is optional and may time out.
 `preview_guidance` locates nested deletions in the candidate and shows proposed text for up
 to five affected paragraphs (new/changed passages first; 900 characters each, explicitly marked if incomplete).
+Ordering uses the existing paragraph-sequence comparison, including repeated occurrences;
+placement of indistinguishable copies can be ambiguous.
 Use `read_docx` and its cursor for full text/more passages; this does not accept revisions.
 LibreOffice may omit strikethrough for these deletions. Text projection uses pending insertions
 and excludes deletions from all retained rounds; fields, objects and table layout have stated limits.

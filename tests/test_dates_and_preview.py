@@ -44,10 +44,24 @@ def test_python_gets_fresh_utc_per_call(project, clock):
 @pytest.mark.parametrize('date,reason', [
     ('2026-11-14T12:00:00Z', None),
     ('2026-11-14T15:00:00+03:00', None),
+    ('2026-11-13T12:00:00+00:00', None),
+    ('2026-11-13T12:00:00-00:00', None),
+    ('2026-11-13T12:00:00+14:00', None),
+    ('2026-11-13T12:00:00-14:00', None),
+    ('2026-11-13T12:00:00+13:59', None),
+    ('2026-11-13T12:00:00-03:30', None),
     ('2026-11-14T12:05:00Z', None),
     (None, 'Missing date'),
     ('not-a-date', 'Invalid date/time'),
     ('2026-11-14T12:00:00', 'explicit timezone'),
+    ('2026-11-14T10:00:00+03:75', 'valid explicit timezone'),
+    ('2026-11-14T10:00:00-03:75', 'valid explicit timezone'),
+    ('2026-11-14T10:00:00+14:01', 'valid explicit timezone'),
+    ('2026-11-14T10:00:00-14:01', 'valid explicit timezone'),
+    ('2026-11-14T10:00:00+15:00', 'valid explicit timezone'),
+    ('2026-11-14T10:00:00-15:00', 'valid explicit timezone'),
+    ('2026-11-14T10:00:00+0300', 'valid explicit timezone'),
+    ('2026-11-14T10:00:00+03:00:30', 'valid explicit timezone'),
     ('2026-11-14T12:05:01Z', 'future'),
     ('2026-11-14T15:00:00Z', 'future'),
 ])
@@ -75,13 +89,14 @@ def test_only_new_revision_and_comment_dates_warn(tmp_path, clock, date, reason)
     assert 'existing_comments_preserved' not in report['summary']['observations']
 
 
-def test_date_warning_does_not_rewrite_or_block_save(project, clock):
+@pytest.mark.parametrize('date', ['2099-01-01T00:00:00Z', '2026-11-14T10:00:00+03:75'])
+def test_date_warning_does_not_rewrite_or_block_save(project, clock, date):
     workspace, tasks = project
     source = docx(workspace.project / 'source.docx', [para(run('Original'))])
     original = source.read_bytes()
     task = tasks.start(str(source))
     candidate = Path(task['cwd']) / task['candidate']
-    docx(candidate, [para(run('Original'), rev('ins', '1', ME, run(' added'), date='2099-01-01T00:00:00Z'))])
+    docx(candidate, [para(run('Original'), rev('ins', '1', ME, run(' added'), date=date))])
     proposed = candidate.read_bytes()
     report = check_docx(Path(task['snapshot']), candidate, ME)
     assert report['summary']['warnings'] == ['new_revision_dates']
@@ -159,3 +174,38 @@ def test_preview_prioritizes_changed_passage_over_old_history(tmp_path):
     assert guidance['affected_paragraphs'] == 7
     assert guidance['fragments'][0]['id'] == 'word/document.xml#p7'
     assert guidance['fragments'][0]['proposed_text'] == 'credited'
+
+
+@pytest.mark.parametrize('position', [0, 3, 6])
+def test_preview_prioritizes_new_occurrence_of_old_fragment(tmp_path, position):
+    old = [para(rev('ins', str(i), OTHER, run(f'Old {i} '),
+                    rev('del', str(i + 20), ME, run('gone', 'delText')))) for i in range(6)]
+    duplicate = para(rev('ins', '100', OTHER, run('Old 0 '),
+                        rev('del', '101', ME, run('gone', 'delText'))))
+    _, report = check(tmp_path, old, [*old[:position], duplicate, *old[position:]])
+    guidance = report['preview_guidance']
+    assert guidance['affected_paragraphs'] == 7 and guidance['remaining_paragraphs'] == 2
+    assert guidance['fragments'][0]['id'] == f'word/document.xml#p{position + 1}'
+    assert guidance['fragments'][0]['proposed_text'] == 'Old 0 '
+    assert report['changes']['total'] == 1
+    assert report['changes']['items'][0]['after']['id'] == guidance['fragments'][0]['id']
+    full = [item for item in read_all(tmp_path / 'candidate.docx') if item['type'] == 'paragraph']
+    assert len(full) == 7 and sum(item['text'] == 'Old 0 ' for item in full) == 2
+
+
+def test_preview_prioritizes_changed_occurrence_matching_another_old_paragraph(tmp_path):
+    old = [para(rev('ins', str(i), OTHER, run(f'Old {i} '),
+                    rev('del', str(i + 20), ME, run('gone', 'delText')))) for i in range(6)]
+    duplicate = para(rev('ins', '100', OTHER, run('Old 0 '),
+                        rev('del', '101', ME, run('gone', 'delText'))))
+    _, report = check(tmp_path, old, [*old[:5], duplicate])
+    assert report['preview_guidance']['fragments'][0]['id'] == 'word/document.xml#p6'
+
+
+def test_deleted_paragraph_does_not_make_remaining_history_new(tmp_path):
+    old = [para(rev('ins', str(i), OTHER, run(f'Old {i} '),
+                    rev('del', str(i + 20), ME, run('gone', 'delText')))) for i in range(7)]
+    _, report = check(tmp_path, old, old[1:])
+    assert report['preview_guidance']['fragments'][0]['proposed_text'] == 'Old 1 '
+    assert report['changes']['total'] == 1
+    assert report['changes']['items'][0]['after'] is None

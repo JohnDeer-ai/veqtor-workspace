@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import difflib
 import hashlib
+import re
 from collections import Counter
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
@@ -439,8 +440,9 @@ def _date_issue(value, checked_at):
         return "Missing date."
     try:
         stamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        if "T" not in value or stamp.tzinfo is None:
-            return "Use a date and time with an explicit timezone (normally UTC/Z)."
+        # fromisoformat normalizes offsets such as +03:75 and accepts offsets beyond XML's range.
+        if "T" not in value or not re.search(r"(?:Z|[+-](?:(?:0[0-9]|1[0-3]):[0-5][0-9]|14:00))\Z", value):
+            return "Use a date and time with a valid explicit timezone: Z or +/-HH:MM, up to +/-14:00."
     except ValueError:
         return "Invalid date/time."
     if stamp > checked_at + timedelta(minutes=5):

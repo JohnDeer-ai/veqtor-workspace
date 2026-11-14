@@ -136,17 +136,33 @@ def paragraphs(roots):
     return records
 
 
+def _paragraph_changes(before, after):
+    """Align occurrences in each story; shared by excerpts and preview prioritization."""
+    for part in sorted({r["location"]["part"] for r in before + after}):
+        left, right = ([r for r in records if r["location"]["part"] == part] for records in (before, after))
+        matcher = difflib.SequenceMatcher(None, [_sig(r["node"]) for r in left],
+                                          [_sig(r["node"]) for r in right], autojunk=False)
+        for kind, i, j, k, stop in matcher.get_opcodes():
+            if kind == "equal":
+                continue
+            for n in range(max(j - i, stop - k)):
+                yield (left[i + n] if i + n < j else None,
+                       right[k + n] if k + n < stop else None, kind)
+
+
 def preview_guidance(roots, original):
     """Bounded evidence for affected candidate passages, using the existing text projection."""
-    affected = [r for r in paragraphs(roots) if NESTED_DELETION_WARNING in r["warnings"]]
+    records = paragraphs(roots)
+    affected = [r for r in records if NESTED_DELETION_WARNING in r["warnings"]]
     result = {"document": "candidate", "affected_paragraphs": len(affected), "fragments": []}
     if not affected:
         return result
-    old = {(r["location"]["part"], _sig(r["node"])) for r in paragraphs(original)}
-    affected.sort(key=lambda r: (r["location"]["part"], _sig(r["node"])) in old)
+    changed = {new["id"] for _, new, _ in _paragraph_changes(paragraphs(original), records) if new is not None}
+    affected.sort(key=lambda r: r["id"] not in changed)
     result.update(
         warning=NESTED_DELETION_WARNING,
-        excerpt_order="New/changed paragraph content and markup first, then retained passages.",
+        excerpt_order="New/changed occurrences from paragraph-sequence comparison first, then retained passages. "
+                      "Placement of indistinguishable copies can be ambiguous.",
         text_view="Proposed text: includes pending insertions and excludes deletions, including earlier rounds. "
                   "Read-only text projection, not a clean DOCX or Word layout; no revisions are accepted.",
         remaining_paragraphs=max(0, len(affected) - 5),
@@ -291,28 +307,19 @@ def change_summary(before, after, start=0):
     """Compact current-task differences; use read_docx for full text/history."""
     if type(start) is not int or start < 0:
         raise ValueError("changes_start must be a nonnegative integer.")
-    a, b = paragraphs(before), paragraphs(after)
     changes = []
-    for part in sorted({r["location"]["part"] for r in a + b}):
-        left, right = ([r for r in records if r["location"]["part"] == part] for records in (a, b))
-        matcher = difflib.SequenceMatcher(None, [_sig(r["node"]) for r in left],
-                                          [_sig(r["node"]) for r in right], autojunk=False)
-        def brief(r, offset=0):
-            return {"id": r["id"], "location": r["location"], "text_excerpt": r["text"][offset:offset + 240],
-                    "text_offset": offset,
-                    "text_length": len(r["text"]), "revision_count": len(r["revisions"]), "warnings": r["warnings"]}
-        for kind, i, j, k, l in matcher.get_opcodes():
-            if kind == "equal":
-                continue
-            for n in range(max(j - i, l - k)):
-                old, new = left[i + n] if i + n < j else None, right[k + n] if k + n < l else None
-                offset = 0
-                if old and new and old["text"] != new["text"]:
-                    shared = next((i for i, pair in enumerate(zip(old["text"], new["text"])) if pair[0] != pair[1]),
-                                  min(len(old["text"]), len(new["text"])))
-                    offset = max(0, shared - 70)
-                changes.append({"before": brief(old, offset) if old else None, "after": brief(new, offset) if new else None,
-                                "kind": "formatting_or_markup" if old and new and old["text"] == new["text"] else kind})
+    def brief(r, offset=0):
+        return {"id": r["id"], "location": r["location"], "text_excerpt": r["text"][offset:offset + 240],
+                "text_offset": offset,
+                "text_length": len(r["text"]), "revision_count": len(r["revisions"]), "warnings": r["warnings"]}
+    for old, new, kind in _paragraph_changes(paragraphs(before), paragraphs(after)):
+        offset = 0
+        if old and new and old["text"] != new["text"]:
+            shared = next((i for i, pair in enumerate(zip(old["text"], new["text"])) if pair[0] != pair[1]),
+                          min(len(old["text"]), len(new["text"])))
+            offset = max(0, shared - 70)
+        changes.append({"before": brief(old, offset) if old else None, "after": brief(new, offset) if new else None,
+                        "kind": "formatting_or_markup" if old and new and old["text"] == new["text"] else kind})
     return {"scope": "Snapshot before this task versus result, including markup changes; excerpts show the first text difference, not full text. "
                      "Adjacent changed paragraphs are paired by order, not semantic identity. This is not a history of rounds.",
             "total": len(changes), "items": changes[start:start + 5],

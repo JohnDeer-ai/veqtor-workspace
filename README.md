@@ -59,6 +59,8 @@ includes the proposed text of up to five affected paragraphs (new/changed passag
 explicit continuation limits). Read further with `read_docx`; this view does not accept
 revisions, create a clean copy or reproduce Word layout. `native_word` separately states
 that the server has not checked the file in Word, regardless of rendering success.
+Excerpt ordering uses paragraph-sequence comparison, including repeated occurrences;
+placement of indistinguishable copies can be ambiguous.
 
 - macOS only. The Python process and children run under an OS sandbox: selected
   file/folder and runtime reads, writes inside task `work/`, no network. The server retains logs.
@@ -120,7 +122,8 @@ that the server has not checked the file in Word, regardless of rendering succes
   without a task (its logs stay private). DOCX reading already supports `next_cursor`.
 - Each Python call receives `VEQTOR_UTC_NOW`, an actual UTC timestamp, alongside
   `VEQTOR_AUTHOR`. These are conveniences for new revisions/comments, not enforced
-  metadata. Diagnostics warn about missing/invalid/timezone-less dates or dates more
+  metadata. Diagnostics check the original timezone spelling/range (without normalizing
+  invalid offsets) and warn about missing/invalid/timezone-less dates or dates more
   than five minutes ahead of `checked_at_utc`. Retained historical dates are not changed
   or rechecked as new. Cached reports retain their original check time; saving is unaffected.
 - The checker undoes the new tracked changes and new comments and compares the whole
