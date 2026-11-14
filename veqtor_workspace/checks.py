@@ -13,6 +13,7 @@ import difflib
 import hashlib
 from collections import Counter
 from copy import deepcopy
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zipfile import BadZipFile, ZipFile
 
@@ -432,7 +433,22 @@ def _added_insertions(original, restored, keys):
     return proposed
 
 
-def _story(part, a, b, author, new_comment_ids):
+def _date_issue(value, checked_at):
+    """Advisory timestamp check; never normalize dates or infer a negotiation round."""
+    if not value:
+        return "Missing date."
+    try:
+        stamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if "T" not in value or stamp.tzinfo is None:
+            return "Use a date and time with an explicit timezone (normally UTC/Z)."
+    except ValueError:
+        return "Invalid date/time."
+    if stamp > checked_at + timedelta(minutes=5):
+        return "More than 5 minutes in the future at this check; verify the clock and timezone."
+    return None
+
+
+def _story(part, a, b, author, new_comment_ids, checked_at):
     found = {name: [] for name in FINDINGS}
     old_counts = Counter(_key(e) for e in a.iter(*REVISION_TAGS))
     old_keys = set(old_counts)
@@ -491,8 +507,9 @@ def _story(part, a, b, author, new_comment_ids):
             continue
         if e.get(W + "author") != author:
             found["authors"].append({**where, "author": e.get(W + "author")})
-        if not e.get(W + "date"):
-            found["dates"].append(where)
+        date = e.get(W + "date")
+        if issue := _date_issue(date, checked_at):
+            found["dates"].append({**where, "date": date, "issue": issue})
         if e.tag in (W + "ins", W + "del") and e.getparent().tag not in (W + "rPr", W + "trPr"):
             outer = next(e.iterancestors(*TEXT_REVISIONS), None)
             inside = outer is not None and {
@@ -591,6 +608,9 @@ def _package_issues(before, after, left, right):
 
 def check_docx(original: Path, candidate: Path, author: str, changes_start: int = 0) -> dict:
     checks = []
+    checked_at = datetime.now(timezone.utc)
+    evidence = {"checked_at_utc": checked_at.isoformat(timespec="seconds").replace("+00:00", "Z"),
+                "native_word": "not_checked_by_server"}
 
     def add(name, ok, detail, problem="observation"):
         if ok:
@@ -607,11 +627,11 @@ def check_docx(original: Path, candidate: Path, author: str, changes_start: int 
         before, left = _package(original)
         after, right = _package(candidate)
     except CheckLimit as exc:
-        return {"status": "not_checked", "summary": {"errors": [], "observations": [], "warnings": [],
+        return {**evidence, "status": "not_checked", "summary": {"errors": [], "observations": [], "warnings": [],
                 "not_checked": ["docx_preservation"]},
                 "checks": [{"check": "docx_preservation", "status": "not_checked", "detail": str(exc)}]}
     except (OSError, ValueError, ET.XMLSyntaxError, BadZipFile, RuntimeError) as exc:
-        return {"status": "error", "summary": {"errors": ["package_and_xml"], "observations": [], "warnings": [], "not_checked": []},
+        return {**evidence, "status": "error", "summary": {"errors": ["package_and_xml"], "observations": [], "warnings": [], "not_checked": []},
                 "checks": [{"check": "package_and_xml", "status": "error", "detail": str(exc)}]}
     add("package_and_xml", True, "ZIP members readable; XML well-formed. This is not an XSD or Word-opening check.")
     changed = sorted(n for n in before.keys() | after.keys() if before.get(n) != after.get(n))
@@ -626,7 +646,7 @@ def check_docx(original: Path, candidate: Path, author: str, changes_start: int 
         if a is None or b is None:
             totals["untracked"].append({"part": part, "differences": [{"where": "whole part", "change": "added or removed"}]})
             continue
-        found = _story(part, a, b, author, set(new_comments))
+        found = _story(part, a, b, author, set(new_comments), checked_at)
         for name in FINDINGS:
             totals[name].extend(found[name])
         new_count, split, inherited = new_count + found["new"], split + found["split"], inherited + found["inherited"]
@@ -643,12 +663,17 @@ def check_docx(original: Path, candidate: Path, author: str, changes_start: int 
     new_comment_issues = (repeated + [{"id": k, "issue": "unexpected author", "author": e.get(W + "author")}
                                       for k, e in new_comments.items() if e.get(W + "author") != author]
                           + [{"id": k, "issue": "not anchored in the text"} for k in new_comments if k not in referenced])
+    comment_dates = [{"id": k, "date": e.get(W + "date"), "issue": issue}
+                     for k, e in new_comments.items() if (issue := _date_issue(e.get(W + "date"), checked_at))]
     package_issues, metadata = _package_issues(before, after, left, right)
 
     add("package_parts", not package_issues, {"issues": package_issues, "metadata_changed": metadata})
     add("new_revision_authors", not totals["authors"],
         {"new_revisions": new_count, "unexpected_authors": totals["authors"][:20]})
-    add("new_revision_dates", not totals["dates"], totals["dates"][:20])
+    add("new_revision_dates", not totals["dates"],
+        {"issues": totals["dates"][:20], "count": len(totals["dates"])} if totals["dates"] else None, "warning")
+    add("new_comment_dates", not comment_dates,
+        {"issues": comment_dates[:20], "count": len(comment_dates)} if comment_dates else None, "warning")
     add("new_revision_ids", not totals["ids"], totals["ids"][:20])
     add("new_revision_structure", not totals["structure"], {
         "issues": totals["structure"][:20],
@@ -689,11 +714,12 @@ def check_docx(original: Path, candidate: Path, author: str, changes_start: int 
     checks.append({"check": "layout_and_legal_intent", "status": "not_checked",
                    "detail": "Native Word opening/accept-reject, XSD/relationship validation, layout, fields and legal meaning are not checked."})
     group = {s: [c["check"] for c in checks if c["status"] == s] for s in ("observation", "warning", "not_checked")}
-    from veqtor_workspace.reading import change_summary
+    from veqtor_workspace.reading import change_summary, preview_guidance
 
-    return {"status": "diagnostic",
+    return {**evidence, "status": "diagnostic",
             "summary": {"errors": [], "observations": group["observation"], "warnings": group["warning"], "not_checked": group["not_checked"]},
             "checks": checks, "changed_parts": changed,
             "original_sha256": hashlib.sha256(original.read_bytes()).hexdigest(),
             "candidate_sha256": hashlib.sha256(candidate.read_bytes()).hexdigest(),
-            "changes": change_summary(left, right, changes_start)}
+            "changes": change_summary(left, right, changes_start),
+            "preview_guidance": preview_guidance(right, left)}

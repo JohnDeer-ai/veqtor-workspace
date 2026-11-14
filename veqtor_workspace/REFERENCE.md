@@ -32,8 +32,12 @@ reading; do not repeat edits to recover output. `read_docx` already supports `ne
 Assigning `paragraph.text` to an existing redlined paragraph can erase history and formatting.
 These examples apply when choosing direct XML editing; another valid implementation is allowed.
 
-New revisions/comments use the configured author (`os.environ["VEQTOR_AUTHOR"]`), an explicit
-UTC date and fresh unique ids. Preserve unrelated earlier text, authors, dates and history.
+New revisions/comments can use the configured author (`os.environ["VEQTOR_AUTHOR"]`) and
+`os.environ["VEQTOR_UTC_NOW"]`, supplied afresh for each Python call, plus fresh unique ids.
+Do not label local time with Z; a deliberately specified date remains your choice.
+Diagnostics warn about missing/invalid dates, absent timezones and dates over five minutes
+ahead of `checked_at_utc`, only for new revisions/comments. They do not rewrite dates or gate saving.
+Preserve unrelated earlier text, authors, dates and history.
 When splitting runs, preserve mixed formatting and use `xml:space="preserve"` on text pieces
 with leading/trailing spaces. Word otherwise drops those spaces.
 
@@ -81,8 +85,13 @@ Pages belong to the preview, not Word pagination. Include clause numbers or text
 Search has no OCR or cross-page phrase matching; no match does not prove absence from the DOCX.
 
 Inspect relevant output to the extent needed for the task. Preview is optional and may time out.
-LibreOffice can display old nested deletions incorrectly. State such limits rather than
-repeatedly trying viewers. Native Word opening, layout and accept/reject are separate checks.
+`preview_guidance` locates nested deletions in the candidate and shows proposed text for up
+to five affected paragraphs (new/changed passages first; 900 characters each, explicitly marked if incomplete).
+Use `read_docx` and its cursor for full text/more passages; this does not accept revisions.
+LibreOffice may omit strikethrough for these deletions. Text projection uses pending insertions
+and excludes deletions from all retained rounds; fields, objects and table layout have stated limits.
+`native_word="not_checked_by_server"` is separate from rendering/diagnostics. Report any external
+Word opening, display and accept/reject checks separately. Cached date checks retain `checked_at_utc`.
 
 ## Saving and interrupted calls
 

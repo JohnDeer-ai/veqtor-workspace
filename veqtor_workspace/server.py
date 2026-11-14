@@ -16,7 +16,7 @@ from veqtor_workspace.runner import DEFAULT_CALL_SECONDS, DEFAULT_STATE, Workspa
 
 def build_server(workspace: Workspace) -> MCPServer:
     operations = Operations(workspace)
-    server = MCPServer("veqtor-workspace", version="0.0.14", instructions=(
+    server = MCPServer("veqtor-workspace", version="0.0.15", instructions=(
         "Local files and Python for model-directed document work. Start with workspace_info for the short workflow. "
         "Choose your own editing and verification method. Helpers and check_docx are optional; "
         "no clean diagnostic report is required to save. Preserve what the user did not ask to change. "
@@ -49,6 +49,7 @@ def build_server(workspace: Workspace) -> MCPServer:
         Python defaults to 255 seconds, leaving 15 seconds for the result; output is unbuffered.
         Cancellation stops the call's process group. Busy calls fail immediately, without a queue.
         Return concise evidence with print(); full stdout/stderr and the script are retained in .runs/.
+        For new revision/comment metadata, os.environ supplies VEQTOR_AUTHOR and fresh VEQTOR_UTC_NOW.
         Verify the requested result using a suitable method of your choice. check_docx is optional.
         """
         return await operations.call("run_python", {"code": code, "timeout_seconds": timeout_seconds,
@@ -98,7 +99,10 @@ def build_server(workspace: Workspace) -> MCPServer:
         errors means the comparison could not read the package/XML, not that all observations
         are damage. Warnings and unchecked areas remain explicit. Also reports redline_quality when new
         simple replacements delete and reinsert equal word edges with identical formatting.
-        Review relevant fragments; no automatic repair or save blocking. This is not a complete
+        Review relevant fragments; no automatic repair or save blocking.
+        New revision/comment dates are advisory, measured at checked_at_utc.
+        preview_guidance locates nested deletions and shows proposed text independently of rendering;
+        native_word states that the server does not perform a Word check. This is not a complete
         difference report, Word-opening test or legal check. With render=True, also render both files
         once within a shared preview deadline (default 60 seconds). The entire check,
         including rendering, stays within the connection's call ceiling (normally 270 seconds).

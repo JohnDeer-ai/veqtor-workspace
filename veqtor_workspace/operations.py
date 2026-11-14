@@ -132,7 +132,7 @@ def perform(w: Workspace, operation: str, args: dict) -> dict:
         try:
             cached = json.loads(receipt.read_text())
             result = cached["report"]
-            reused_check = (cached["version"] == "0.0.14" and cached["author"] == w.author
+            reused_check = (cached["version"] == "0.0.15" and cached["author"] == w.author
                             and cached["changes_start"] == changes_start
                             and result["original_sha256"] == preview["files"]["original"]["sha256"]
                             and result["candidate_sha256"] == preview["files"]["candidate"]["sha256"])
@@ -149,10 +149,11 @@ def perform(w: Workspace, operation: str, args: dict) -> dict:
                 and result.get("original_sha256") == preview["files"]["original"]["sha256"]
                 and result.get("candidate_sha256") == preview["files"]["candidate"]["sha256"]):
             with atomic_save(Path(preview["directory"]) / "check.json") as temporary:
-                temporary.write_text(json.dumps({"version": "0.0.14", "author": w.author,
+                temporary.write_text(json.dumps({"version": "0.0.15", "author": w.author,
                                                  "changes_start": changes_start, "report": result}))
         if reused_check:
-            result = {key: result[key] for key in ("status", "summary", "original_sha256", "candidate_sha256")}
+            result = {key: result[key] for key in ("status", "summary", "original_sha256", "candidate_sha256",
+                                                  "checked_at_utc", "native_word", "preview_guidance")}
             result["check_reused"] = True
         result["preview"] = select_pages(preview, pages, args["preview_side"], query)
         images = [base64.b64encode(Path(p).read_bytes()).decode() for p in result["preview"]["images"]]

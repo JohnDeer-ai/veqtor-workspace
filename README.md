@@ -54,6 +54,11 @@ negotiation rounds. Tables use physical XML row/cell positions. Fields, numberin
 drawings and complex structural changes have explicit coverage limits. Custom Python
 remains available. The same paragraph reader supplies check_docx's five before/after
 excerpts (`changes`, paged with `changes_start`) from the current task's snapshot.
+`preview_guidance` locates nested deletions which LibreOffice may display incorrectly and
+includes the proposed text of up to five affected paragraphs (new/changed passages first; 900 characters each, with
+explicit continuation limits). Read further with `read_docx`; this view does not accept
+revisions, create a clean copy or reproduce Word layout. `native_word` separately states
+that the server has not checked the file in Word, regardless of rendering success.
 
 - macOS only. The Python process and children run under an OS sandbox: selected
   file/folder and runtime reads, writes inside task `work/`, no network. The server retains logs.
@@ -113,6 +118,11 @@ excerpts (`changes`, paged with `changes_start`) from the current task's snapsho
   scripts remain in `.runs/` and are read-only to task code. Truncated replies include
   `output_hint`: read task logs in small portions, or narrow the source read when running
   without a task (its logs stay private). DOCX reading already supports `next_cursor`.
+- Each Python call receives `VEQTOR_UTC_NOW`, an actual UTC timestamp, alongside
+  `VEQTOR_AUTHOR`. These are conveniences for new revisions/comments, not enforced
+  metadata. Diagnostics warn about missing/invalid/timezone-less dates or dates more
+  than five minutes ahead of `checked_at_utc`. Retained historical dates are not changed
+  or rechecked as new. Cached reports retain their original check time; saving is unaffected.
 - The checker undoes the new tracked changes and new comments and compares the whole
   document with the original, so untracked text, formatting, paragraph, table and
   comment mismatches are reported with their location. It is an optional diagnostic,

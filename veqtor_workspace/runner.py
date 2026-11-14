@@ -11,6 +11,7 @@ import signal
 import subprocess
 import threading
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from veqtor_workspace.preview import renderer_info
@@ -93,7 +94,7 @@ class Workspace:
 
     def info(self) -> dict:
         return {
-            "prototype": "0.0.14", "author": self.author,
+            "prototype": "0.0.15", "author": self.author,
             "access_mode": "paths" if self.dynamic else "legacy_folder",
             "read_paths": [str(p) for p in self.read_paths],
             "project_folder": str(self.project) if self.project else None,
@@ -176,6 +177,7 @@ class Workspace:
             "PYTHONDONTWRITEBYTECODE": "1", "PYTHONPATH": str(self.package),
             "HOME": str(self.root / "work/.home"), "TMPDIR": str(self.root / "work/.tmp"),
             "VEQTOR_AUTHOR": self.author,
+            "VEQTOR_UTC_NOW": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
         }
         bootstrap = f"import runpy; runpy.run_path({str(script)!r},run_name='__main__')"
         timed_out = False

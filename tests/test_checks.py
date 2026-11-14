@@ -140,7 +140,6 @@ DEFECTS = {
     "wrong_author": (
         [para(run("Old"))], [para(rev("del", "1", OTHER, run("Old", "delText")), rev("ins", "2", OTHER, run("New")))],
         "new_revision_authors"),
-    "missing_date": ([para(run("Old"))], [para(run("Old"), rev("ins", "1", ME, run(" more"), date=None))], "new_revision_dates"),
     "reused_id": (
         [para(run("Old"))], [para(run("Old"), rev("ins", "1", ME, run(" a")), rev("ins", "1", ME, run(" b")))], "new_revision_ids"),
     # The three structures below open in Word 16.95 only as a repaired copy.

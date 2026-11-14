@@ -302,6 +302,9 @@ def test_search_and_page_calls_reuse_check_and_refuse_changed_bytes(tmp_path, mo
     args.update(render=False, preview_id=directory.name, preview_query='section   9')
     searched = operations.perform(workspace, 'check_docx', dict(args))['report']
     assert searched['check_reused'] is True and len(calls) == 1
+    for field in ('checked_at_utc', 'native_word', 'preview_guidance'):
+        assert searched[field] == initial['report'][field]
+    assert searched['native_word'] == 'not_checked_by_server'
     assert searched['preview']['search']['matching_pages'] == [2, 3]
     assert searched['preview']['shown_pages'] == [2, 3]
     assert 'pagination' in searched['preview']['change_meaning']

@@ -32,6 +32,12 @@ def normalized(text):
     return " ".join(text.split()).casefold()
 
 
+NESTED_DELETION_WARNING = (
+    "LibreOffice may show this nested deletion as retained/inserted text without strikethrough. "
+    "Use the proposed text to read the clause; verify the revision display in Microsoft Word."
+)
+
+
 def visible_text(node):
     """Text projection only: include insertions, exclude deletions/move sources.
 
@@ -113,6 +119,8 @@ def paragraphs(roots):
                                   "text": "".join(_text(t) for t in (p if e in ancestors else e).iter(W + "t", W + "delText"))})
             tags = {e.tag for e in own}
             warnings = []
+            if any(r["kind"] in ("del", "moveFrom") and r["parents"] for r in revisions):
+                warnings.append(NESTED_DELETION_WARNING)
             if tags & {W + "fldChar", W + "fldSimple", W + "instrText", W + "numPr"}:
                 warnings.append("Fields use stored display text; automatic numbering/field calculation is not evaluated.")
             if tags & {W + "drawing", W + "pict", W + "sym", W + "object", M + "oMath", M + "oMathPara"}:
@@ -126,6 +134,31 @@ def paragraphs(roots):
             records.append({"id": f"{part}#p{number}", "location": location, "text": visible_text(p),
                             "revisions": revisions, "warnings": warnings, "node": p})
     return records
+
+
+def preview_guidance(roots, original):
+    """Bounded evidence for affected candidate passages, using the existing text projection."""
+    affected = [r for r in paragraphs(roots) if NESTED_DELETION_WARNING in r["warnings"]]
+    result = {"document": "candidate", "affected_paragraphs": len(affected), "fragments": []}
+    if not affected:
+        return result
+    old = {(r["location"]["part"], _sig(r["node"])) for r in paragraphs(original)}
+    affected.sort(key=lambda r: (r["location"]["part"], _sig(r["node"])) in old)
+    result.update(
+        warning=NESTED_DELETION_WARNING,
+        excerpt_order="New/changed paragraph content and markup first, then retained passages.",
+        text_view="Proposed text: includes pending insertions and excludes deletions, including earlier rounds. "
+                  "Read-only text projection, not a clean DOCX or Word layout; no revisions are accepted.",
+        remaining_paragraphs=max(0, len(affected) - 5),
+        read_more="Use read_docx(candidate, query='distinctive clause text', context=0); "
+                  "follow next_cursor with the same options. query=None reads all passages.",
+    )
+    for r in affected[:5]:
+        result["fragments"].append({"id": r["id"], "location": r["location"],
+            "proposed_text": r["text"][:900], "text_length": len(r["text"]),
+            "text_complete": len(r["text"]) <= 900,
+            "projection_limits": [w for w in r["warnings"] if w != NESTED_DELETION_WARNING]})
+    return result
 
 
 def _comments(roots, records):

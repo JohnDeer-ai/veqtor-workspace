@@ -10,7 +10,8 @@ There is no fixed catalog of document operations. Helpers and diagnostics are op
    Pass `task_id` to subsequent Python calls and edit the candidate in `work/`.
    Source files and `inputs/` are read-only. Files persist between calls; variables do not.
 3. Follow the user's requested result. Keep edits precise and preserve unrelated text,
-   formatting and negotiation history. Use the configured author for new revisions/comments.
+   formatting and negotiation history. For new revisions/comments, Python provides
+   `os.environ["VEQTOR_AUTHOR"]` and fresh UTC `os.environ["VEQTOR_UTC_NOW"]` for this run.
    Accepting/rejecting revisions, changing comments and producing a clean copy are allowed
    when requested. Choose how to implement and verify those changes.
 4. Read back the changed passages and check relevant output using a suitable method.
