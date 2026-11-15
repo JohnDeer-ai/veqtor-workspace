@@ -13,7 +13,7 @@ from mcp.client import Client
 from mcp.client.stdio import stdio_client
 
 from veqtor_workspace.operations import Operations
-from veqtor_workspace.output import MAX_REPLY, read_stream
+from veqtor_workspace.output import MAX_REPLY, output_text, read_stream
 from veqtor_workspace.runner import Workspace
 
 
@@ -157,7 +157,9 @@ def test_mcp_continuation_both_streams_scratch_and_saved_task(tmp_path, task_mod
             info = await call("workspace_info", {})
             assert info["scratch_dir"] == str(root / "work")
             assert "read_docx" in info["recipe_text"] and "tempfile" in info["recipe_text"]
-            assert len((await client.list_tools()).tools) == 4
+            catalog = (await client.list_tools()).tools
+            assert len(catalog) == 4
+            assert all(len(tool.description) < 2048 for tool in catalog)
             task = await call("document_task", {"action": "start", "file": str(source)}) if task_mode else None
             options = {"task_id": task["task_id"]} if task else {}
             code = f'''
@@ -208,8 +210,9 @@ def test_cursors_reject_other_connections_tampering_and_code_without_exposing_lo
 
     async def exercise():
         operations = Operations(w)
-        result = await operations.call("run_python", {"code": "print('x'*26000)"})
+        result = await operations.call("run_python", {"code": f"print('x'*{MAX_REPLY * 3})"})
         cursor = result["stdout_next_cursor"]
+        assert len(cursor) == 62
         with pytest.raises(ValueError, match="connection"):
             await Operations(w).call("run_python", {"output_cursor": cursor})
         payload, signature = cursor.split(".")
@@ -228,13 +231,63 @@ def test_cursors_reject_other_connections_tampering_and_code_without_exposing_lo
     asyncio.run(exercise())
 
 
+def test_shared_output_ceiling_smaller_pages_visible_markers_and_exact_raw_text(tmp_path):
+    w = Workspace(tmp_path / 'state', Path(os.environ.get('VEQTOR_TEST_PYTHON', sys.executable)), 'Test', dynamic=True,
+                  max_reply_bytes=4096)
+    stdout, stderr = 'строка🙂' * 2000, 'failure details ' * 800
+
+    async def exercise():
+        operations = Operations(w)
+        result = await operations.call('run_python', {'reply_bytes': 100000, 'code':
+            f"import sys; print({stdout!r}, end=''); print({stderr!r}, end='', file=sys.stderr)"})
+        assert result['reply_bytes'] == 4096
+        assert len(result['stdout'].encode()) + len(result['stderr'].encode()) <= 4096
+        assert result['stdout'] and result['stderr']
+        rendered = output_text(result)
+        assert rendered.count('OUTPUT CONTINUES') == 2
+        assert rendered.index(result['stdout']) < rendered.index(result['stdout_next_cursor'])
+        for kind, expected in [('stdout', stdout), ('stderr', stderr)]:
+            text, cursor = result[kind], result[f'{kind}_next_cursor']
+            while cursor:
+                page = await operations.call('run_python', {'output_cursor': cursor, 'reply_bytes': 1024})
+                assert len(page['text'].encode()) <= 1024 and page['reply_bytes'] == 1024
+                assert ('OUTPUT CONTINUES' in output_text(page)) == bool(page['next_cursor'])
+                text += page['text']
+                cursor = page['next_cursor']
+            assert text == expected
+        with pytest.raises(ValueError, match='positive integer'):
+            await operations.call('run_python', {'code': "print('not run')", 'reply_bytes': -1})
+    asyncio.run(exercise())
+
+
+def test_invalid_utf8_does_not_expand_past_visible_output_budget(tmp_path):
+    raw = b'\xff' * 25000
+    path = tmp_path / 'raw'
+    path.write_bytes(raw)
+    page = read_stream(path)
+    assert len(page['text'].encode()) <= MAX_REPLY
+    assert page['remaining_bytes'] > 0 and page['_next_offset'] > 0
+
+
+def test_results_list_only_current_artifacts_and_do_not_imply_mandatory_verification(tmp_path):
+    w = Workspace(tmp_path / 'state', Path(os.environ.get('VEQTOR_TEST_PYTHON', sys.executable)), 'Test', dynamic=True)
+    (w.root / 'work/previous.txt').write_text('earlier work')
+    assert 'outputs' not in w.info()
+    result = w.run("from pathlib import Path; Path('work/new.txt').write_text('new')")
+    assert result['artifacts'] == ['work/new.txt'] and 'verification' not in result
+    result = w.run("print('read-only call')")
+    assert result['artifacts'] == []
+    result = w.run("from pathlib import Path; Path('work/previous.txt').write_text('changed')")
+    assert result['artifacts'] == ['work/previous.txt']
+
+
 @pytest.mark.parametrize("failure", ["missing", "changed"])
 def test_missing_or_changed_output_does_not_rerun_code(tmp_path, failure):
     w = Workspace(tmp_path / "state", Path(os.environ.get("VEQTOR_TEST_PYTHON", sys.executable)), "Test", dynamic=True)
 
     async def exercise():
         operations = Operations(w)
-        result = await operations.call("run_python", {"code": "from pathlib import Path; Path('work/count').write_text('once'); print('x'*14000)"})
+        result = await operations.call("run_python", {"code": "from pathlib import Path; Path('work/count').write_text('once'); print('x'*50000)"})
         path = w.root / result["stdout_path"]
         if failure == "missing":
             path.unlink()

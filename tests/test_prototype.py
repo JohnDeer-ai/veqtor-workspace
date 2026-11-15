@@ -14,6 +14,7 @@ from mcp.client import Client
 from mcp.client.stdio import stdio_client
 
 from veqtor_workspace.runner import Workspace
+from veqtor_workspace.output import MAX_REPLY
 
 
 @pytest.fixture
@@ -63,10 +64,10 @@ print("child", "blocked" if p.returncode else "UNEXPECTED_SUCCESS")
 def test_timeout_and_bounded_output(workspace):
     result = workspace.run("import time; time.sleep(10)", 1)
     assert result["timed_out"] is True
-    result = workspace.run("print('a'*20000)")
+    result = workspace.run(f"print('a'*{MAX_REPLY * 2})")
     assert result["stdout_truncated"] is True
-    assert len(result["stdout"]) == 12000
-    assert (workspace.root / result["stdout_path"]).stat().st_size > 12000
+    assert len(result["stdout"]) == MAX_REPLY
+    assert (workspace.root / result["stdout_path"]).stat().st_size > MAX_REPLY
 
 
 def test_truncated_output_hint_recovers_both_streams_without_repeating_edit(project):
@@ -84,8 +85,7 @@ print('error context ' * 1000, file=sys.stderr)
 """)
     assert result["exit_code"] == 0
     assert result["stdout_truncated"] and result["stderr_truncated"]
-    assert "same task_id" in result["output_hint"]
-    assert "next_cursor" in result["output_hint"]
+    assert "continuation cursors" in result["output_hint"]
     for kind, expected in (("stdout", 'я🙂' * 4000 + '\n'), ("stderr", 'error context ' * 1000 + '\n')):
         assert (context.root / result[f"{kind}_path"]).read_text() == expected
         portion = context.run(f"from pathlib import Path; print(Path({result[f'{kind}_path']!r})"
@@ -98,9 +98,9 @@ print('error context ' * 1000, file=sys.stderr)
 
 def test_plain_read_hint_uses_source_pagination_not_private_logs(tmp_path):
     workspace = Workspace(tmp_path / "state", Path(sys.executable), "Ilya", dynamic=True)
-    result = workspace.run("print('text' * 4000)")
+    result = workspace.run("print('text' * 9000)")
     assert result["stdout_truncated"]
-    assert "logs are private" in result["output_hint"] and "next_cursor" in result["output_hint"]
+    assert "continuation cursors" in result["output_hint"]
     probe = workspace.run(f"from pathlib import Path; Path({result['stdout_path']!r}).read_text()")
     assert "PermissionError" in probe["stderr"]
     assert "output_hint" not in workspace.run("print('small output')")

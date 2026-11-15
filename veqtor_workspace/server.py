@@ -11,12 +11,13 @@ from mcp.server import MCPServer
 from mcp.types import CallToolResult, ImageContent, TextContent, ToolAnnotations
 
 from veqtor_workspace.operations import Operations
+from veqtor_workspace.output import MAX_REPLY, output_text
 from veqtor_workspace.runner import DEFAULT_CALL_SECONDS, DEFAULT_STATE, Workspace
 
 
 def build_server(workspace: Workspace) -> MCPServer:
     operations = Operations(workspace)
-    server = MCPServer("veqtor-workspace", version="0.0.19", instructions=(
+    server = MCPServer("veqtor-workspace", version="0.0.20", instructions=(
         "Local files and Python for model-directed document work. Start with workspace_info for the short workflow. "
         "Choose your own editing and verification method. Helpers and check_docx are optional; "
         "no clean diagnostic report is required to save. Preserve what the user did not ask to change. "
@@ -34,7 +35,7 @@ def build_server(workspace: Workspace) -> MCPServer:
     @server.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=False))
     async def run_python(code: str | None = None, timeout_seconds: float = workspace.script_timeout_seconds,
                          task_id: str | None = None, read_paths: list[str] | None = None,
-                         output_cursor: str | None = None) -> dict:
+                         output_cursor: str | None = None, reply_bytes: int | None = None) -> CallToolResult:
         """Run model-written Python against the selected copies, with no network. Files persist between calls.
 
         Pass task_id from document_task(start) to use that task's current directory:
@@ -53,11 +54,15 @@ def build_server(workspace: Workspace) -> MCPServer:
         Print concise evidence. If truncated, call run_python(output_cursor=stdout_next_cursor or stderr_next_cursor)
         without code/task_id/read_paths. It returns stored text, remaining_bytes and next_cursor; no code runs again.
         Follow next_cursor until null. Cursors last for this connection; they do not grant access to other logs.
+        reply_bytes chooses a smaller UTF-8 output page; requests above the server ceiling
+        (normally 24,000 bytes shared by stdout/stderr) are capped, not rejected.
         For new revision/comment metadata, os.environ supplies VEQTOR_AUTHOR and fresh VEQTOR_UTC_NOW.
         Verify the requested result using a suitable method of your choice. check_docx is optional.
         """
-        return await operations.call("run_python", {"code": code, "timeout_seconds": timeout_seconds,
-                                                    "task_id": task_id, "read_paths": read_paths, "output_cursor": output_cursor})
+        result = await operations.call("run_python", {"code": code, "timeout_seconds": timeout_seconds,
+                                                     "task_id": task_id, "read_paths": read_paths,
+                                                     "output_cursor": output_cursor, "reply_bytes": reply_bytes})
+        return CallToolResult(content=[TextContent(type="text", text=output_text(result))], structuredContent=result)
 
     @server.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=False))
     async def document_task(action: Literal["start", "save", "status"], file: str | None = None,
@@ -92,39 +97,28 @@ def build_server(workspace: Workspace) -> MCPServer:
                    preview_side: Literal["original", "candidate"] = "candidate",
                    task_id: str | None = None, preview_query: str | None = None,
                    changes_start: int = 0) -> CallToolResult:
-        """Optional DOCX diagnostics and preview, not a mandatory save gate or an approval verdict.
+        """Optional DOCX diagnostics and LibreOffice preview; never a save gate or approval verdict.
 
-        Pass task_id alone for the snapshot and result of the current task. In legacy
-        copy mode provide original and candidate paths instead.
-        Undoes the new tracked changes and new comments, then compares the whole document with the
-        original: text, formatting, paragraph, table and comment mismatches are reported with
-        their location. This assumes additive tracked edits; accepting/rejecting revisions,
-        deleting comments, clean copies or ambiguous history can legitimately produce observations.
-        Interpret observations against the user's request; do not rewrite history to clear them.
-        errors means the comparison could not read the package/XML, not that all observations
-        are damage. Warnings and unchecked areas remain explicit. Also reports redline_quality when new
-        simple replacements delete and reinsert equal word edges with identical formatting.
-        Review relevant fragments; no automatic repair or save blocking.
-        New revision/comment dates are advisory, measured at checked_at_utc.
-        preview_guidance locates nested deletions and shows proposed text independently of rendering;
-        native_word states that the server does not perform a Word check. This is not a complete
-        difference report, Word-opening test or legal check. With render=True, also render both files
-        once within a shared preview deadline (default 60 seconds). The entire check,
-        including rendering, stays within the connection's call ceiling (normally 270 seconds).
-        All pages are rendered; up to three images are returned per reply. For later pages,
-        pass preview_id and preview_pages without render=True to reuse the saved preview;
-        all page numbers refer to this preview, not Microsoft Word pagination.
-        Describe locations with clause numbers or text fragments as well.
-        changes lists five before/after paragraph excerpts from this task; use its
-        next_start as changes_start for more. Read full passages/history with the
-        optional veqtor_workspace.reading.read_docx Python helper. This is not a
-        reconstruction of past rounds. preview_query searches text in the existing
-        PDF and selects up to three matching pages, unless preview_pages is explicit.
-        changed_pages includes pagination shifts, not only edited clauses. Cached
-        page calls reuse the check for unchanged bytes and return a compact summary.
-        preview_side can select the original. Reuse is refused if either document changed.
-        Rendering is not
-        visual approval and does not test Word comments or accept/reject. No automatic retry.
+        Use task_id for the task snapshot/result, or original/candidate in copy mode.
+        Compares text, formatting, revisions and comments after undoing inferred new edits.
+        This assumes additive tracked edits: accepting revisions, deleting comments or a clean
+        copy can legitimately produce observations. Interpret findings against the request;
+        do not rewrite correct content to clear them. errors means unreadable package/XML.
+        Warnings include dates, placement and unnecessarily broad plain-text replacements.
+        No automatic repair. This is not a complete difference report, legal check or Word test.
+
+        changes returns five before/after excerpts; pass its next_start as changes_start for more.
+        Optional read_docx reads full passages/history. preview_guidance identifies nested
+        deletions that LibreOffice may display differently; native_word reports not checked.
+
+        render=True renders both files once (shared deadline normally 60s, within the call ceiling).
+        All pages are rendered; at most three images are returned per call. Reuse preview_id
+        with preview_pages or preview_query to inspect more without rendering again.
+        preview_side selects candidate or original. Cached checks are reused only for unchanged files.
+        Page numbers belong to this preview, not Word. changed_pages includes pagination shifts.
+        Give clause/text locations too. A successful render does not mean images were reviewed.
+        Report structural checks, visual review, Word opening and Word accept/reject separately.
+        See workspace_info's optional reference for details. No automatic retry.
         """
         reply = await operations.call("check_docx", {
             "original": original, "candidate": candidate, "render": render, "task_id": task_id,
@@ -150,11 +144,14 @@ def main():
     parser.add_argument("--author", required=True)
     parser.add_argument("--call-timeout-seconds", type=float, default=DEFAULT_CALL_SECONDS,
                         help="Whole-call ceiling; set below the MCP client's timeout")
+    parser.add_argument("--max-reply-bytes", type=int, default=MAX_REPLY,
+                        help="Server ceiling for a shared stdout/stderr page; raise only after client transport testing")
     args = parser.parse_args()
     project = args.project.expanduser().resolve(strict=True) if args.project else None
     root = project / ".veqtor" if project else args.workspace or args.state_dir
     build_server(Workspace(root, args.python, args.author, project, args.call_timeout_seconds,
-                           dynamic=not (project or args.workspace), preview_config=args.preview_config)).run(transport="stdio")
+                           dynamic=not (project or args.workspace), preview_config=args.preview_config,
+                           max_reply_bytes=args.max_reply_bytes)).run(transport="stdio")
 
 
 if __name__ == "__main__":

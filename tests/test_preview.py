@@ -239,7 +239,7 @@ def test_mcp_later_pages_without_reconversion_and_stale_preview_rejected(tmp_pat
             assert json.loads(before.content[0].text)["preview"]["image_side"] == "original"
             protected = await client.call_tool("run_python", {"code":
                 f"from pathlib import Path; Path({page_data['images'][0]!r}).write_bytes(b'changed')"})
-            assert "PermissionError" in json.loads(protected.content[0].text)["stderr"]
+            assert "PermissionError" in protected.structured_content["stderr"]
             invalid = await client.call_tool("check_docx", {**paths, "preview_id": "../escape", "preview_pages": [1]})
             assert invalid.is_error
             document.add_paragraph("Changed after the preview")

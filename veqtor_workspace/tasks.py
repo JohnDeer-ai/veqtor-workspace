@@ -41,7 +41,8 @@ class DocumentTasks:
     def _context(self, folder: Path, read_paths: list[str] | None = None) -> Workspace:
         w = self.workspace
         child = Workspace(folder, w.python, w.author, w.project, w.call_timeout_seconds, w.managed_process_group,
-                          w.dynamic, preview_config=w.preview_config, private_root=w.private_root)
+                          w.dynamic, preview_config=w.preview_config, private_root=w.private_root,
+                          max_reply_bytes=w.max_reply_bytes)
         # These paths were resolved and validated at start, in protected task metadata.
         # Missing supporting material should fail only when code actually reads it.
         child.read_paths = [Path(p) for p in read_paths or []]

@@ -6,10 +6,14 @@ not a required sequence or a closed set of editing operations.
 ## Reading and precise text edits
 
 `from veqtor_workspace.reading import read_docx`
-`read_docx(path, query="distinctive phrase", details=True)` returns relevant paragraphs,
-retained revisions, comments/replies and table-cell context. Follow `next_cursor` with
-identical options until None; long passages continue in chunks. A changed file invalidates
-the cursor. Use query=None to read sequentially. Search includes deleted text and comments.
+`print(read_docx(path, query="distinctive phrase", details=True, context=5))` returns compact
+text with retained revisions, comments/replies and table-cell context. Omit query to read
+the whole document. context accepts any nonnegative number of neighboring XML paragraphs.
+There is no helper page or element limit. The runner saves its entire printed output;
+use run_python's output_cursor if it exceeds one reply. Search includes deleted text and comments.
+Use format="data" for a dictionary with full `items`, original paragraph IDs, locations,
+comment anchors and metadata. The helper does not shorten paragraphs or rewrite the file.
+Default text groups repeated warnings by their paragraph IDs, not by a generated summary.
 Matching paragraphs come before neighboring context; both remain available through continuation.
 Projected current text incorporates pending edits for reading; it does not accept them in
 the file or reconstruct rounds whose markup has been removed. Inspect reported coverage
@@ -30,7 +34,10 @@ Files in `work/` persist between calls in that context; an editing task has its 
 If Python output is truncated, call `run_python(output_cursor=stdout_next_cursor)` or use `stderr_next_cursor`,
 without code, task_id or read_paths. Each page returns stored `text`, byte counts and `next_cursor` (null at the end).
 Reusing a cursor rereads the same page; it never executes code. Cursors expire when the server connection restarts.
-This also works after a task is saved. Other private logs remain inaccessible. `read_docx` has its own document cursor.
+This also works after a task is saved. Other private logs remain inaccessible.
+reply_bytes selects a page within the server ceiling (normally 24,000 UTF-8 bytes shared by stdout/stderr).
+Oversized requests are capped, not rejected. Human-readable replies mark continuation next to the output;
+structuredContent keeps raw stdout/stderr and continuation text unchanged for programmatic use.
 
 ## Direct OOXML editing examples
 
@@ -96,7 +103,7 @@ Inspect relevant output to the extent needed for the task. Preview is optional a
 to five affected paragraphs (new/changed passages first; 900 characters each, explicitly marked if incomplete).
 Ordering uses the existing paragraph-sequence comparison, including repeated occurrences;
 placement of indistinguishable copies can be ambiguous.
-Use `read_docx` and its cursor for full text/more passages; this does not accept revisions.
+Use `read_docx` for full text/more passages; this does not accept revisions.
 LibreOffice may omit strikethrough for these deletions. Text projection uses pending insertions
 and excludes deletions from all retained rounds; fields, objects and table layout have stated limits.
 `native_word="not_checked_by_server"` is separate from rendering/diagnostics. Report any external

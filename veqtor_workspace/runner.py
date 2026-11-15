@@ -14,7 +14,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from veqtor_workspace.output import MAX_REPLY, collect_output
+from veqtor_workspace.output import MAX_REPLY, collect_output, reply_limit
 from veqtor_workspace.preview import renderer_info
 
 DEFAULT_CALL_SECONDS = 270
@@ -29,7 +29,7 @@ class Workspace:
     def __init__(self, root: Path, python: Path, author: str, project: Path | None = None,
                  call_timeout_seconds: float = DEFAULT_CALL_SECONDS, managed_process_group: bool = False,
                  dynamic: bool = False, read_paths: list[str] | None = None, preview_config: Path | None = None,
-                 private_root: Path | None = None):
+                 private_root: Path | None = None, max_reply_bytes: int = MAX_REPLY):
         if platform.system() != "Darwin" or not Path("/usr/bin/sandbox-exec").exists():
             raise RuntimeError("This prototype requires macOS sandbox-exec; no unrestricted fallback.")
         self.root = root.expanduser().resolve()
@@ -43,6 +43,7 @@ class Workspace:
         if not math.isfinite(call_timeout_seconds) or call_timeout_seconds <= 0:
             raise ValueError("The connection's call timeout must be positive and finite.")
         self.call_timeout_seconds = call_timeout_seconds
+        self.max_reply_bytes = reply_limit(None, max_reply_bytes)
         self.managed_process_group = managed_process_group
         self.dynamic = dynamic
         self.read_paths = self.resolve_reads(read_paths or [])
@@ -94,7 +95,7 @@ class Workspace:
 
     def info(self) -> dict:
         return {
-            "prototype": "0.0.19", "author": self.author,
+            "prototype": "0.0.20", "author": self.author,
             "access_mode": "paths" if self.dynamic else "legacy_folder",
             "read_paths": [str(p) for p in self.read_paths],
             "project_folder": str(self.project) if self.project else None,
@@ -103,7 +104,6 @@ class Workspace:
             "scratch_usage": "Intermediate extracts may be written in work/ even without an editing task. "
                              "Use pathlib.Path('work/extract.txt') or Python tempfile; not the cwd root or /tmp.",
             "inputs": sorted(str(p.relative_to(self.root)) for p in (self.root / "inputs").rglob("*") if p.is_file()),
-            "outputs": self.outputs(),
             "recipe": str(self.package / "veqtor_workspace/RECIPE.md"),
             "recipe_text": (self.package / "veqtor_workspace/RECIPE.md").read_text(encoding="utf-8"),
             "reference": str(self.package / "veqtor_workspace/REFERENCE.md"),
@@ -113,7 +113,8 @@ class Workspace:
             "limits": {"default_timeout_seconds": self.script_timeout_seconds,
                        "max_timeout_seconds": self.call_timeout_seconds,
                        "scope": "Whole MCP call, including setup, checks and saving; no disabled deadline or queue.",
-                       "bytes_per_written_file": None, "reply_bytes_per_stream": MAX_REPLY},
+                       "bytes_per_written_file": None, "max_reply_bytes": self.max_reply_bytes,
+                       "reply_scope": "One shared UTF-8 text budget for stdout and stderr; reply_bytes may request less."},
             "preview": {**renderer_info(self.preview_config), "config": str(self.preview_config),
                         "usage": "check_docx(render=True); reuse preview_id with preview_pages for more pages",
                         "default_timeout_seconds": min(60, self.call_timeout_seconds),
@@ -126,6 +127,16 @@ class Workspace:
             if p.is_file() and not any(part.startswith((".", "~$")) for part in p.relative_to(self.root / "work").parts)
             and not p.is_symlink()
         )[:100]
+
+    def output_stamps(self) -> dict:
+        result = {}
+        for name in self.outputs():
+            try:
+                s = (self.root / name).stat()
+                result[name] = (s.st_size, s.st_mtime_ns, s.st_ctime_ns, s.st_ino)
+            except FileNotFoundError:
+                pass
+        return result
 
     def profile(self, script: Path) -> str:
         read = [self.root, self.package, *self.runtime_roots,
@@ -157,20 +168,22 @@ class Workspace:
 {private}
 '''
 
-    def run(self, code: str, timeout_seconds: float | None = None) -> dict:
+    def run(self, code: str, timeout_seconds: float | None = None, reply_bytes: int | None = None) -> dict:
         if not isinstance(code, str) or not code.strip() or len(code) > 100_000:
             raise ValueError("Code must contain 1–100,000 characters.")
         timeout_seconds = self.script_timeout_seconds if timeout_seconds is None else timeout_seconds
+        budget = reply_limit(reply_bytes, self.max_reply_bytes)
         if not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= self.call_timeout_seconds:
             raise ValueError(f"timeout_seconds must be positive and at most {self.call_timeout_seconds}; no unlimited calls.")
         if not self.lock.acquire(blocking=False):
             raise ValueError("A script is already running in this workspace. Wait for its result.")
         try:
-            return self._run(code, timeout_seconds)
+            return self._run(code, timeout_seconds, budget)
         finally:
             self.lock.release()
 
-    def _run(self, code: str, timeout_seconds: float) -> dict:
+    def _run(self, code: str, timeout_seconds: float, reply_bytes: int = MAX_REPLY) -> dict:
+        before = self.output_stamps()
         run_id = uuid.uuid4().hex[:12]
         stem = self.root / ".runs" / run_id
         script = stem.with_suffix(".py")
@@ -205,20 +218,11 @@ class Workspace:
                     pass
                 process.wait()
         result = {"run_id": run_id, "exit_code": process.returncode, "timed_out": timed_out,
-                  "artifacts": self.outputs(), "verification": "not_run", "scratch_dir": str(self.root / "work")}
+                  "artifacts": [name for name, stamp in self.output_stamps().items() if before.get(name) != stamp],
+                  "scratch_dir": str(self.root / "work"), "reply_bytes": reply_bytes}
         # Preserve the direct-runner/older-supervisor response. The MCP supervisor
         # refreshes these bounded pages after stopping the entire process group.
-        result.update(collect_output(self.root, run_id))
+        result.update(collect_output(self.root, run_id, reply_bytes))
         if result["stdout_truncated"] or result["stderr_truncated"]:
-            recovery = (
-                "Full logs are private in calls without task_id; read only the needed source range in the next call. "
-                if self.dynamic and self.root == self.private_root else
-                "Read stdout_path/stderr_path relative to this cwd in portions of up to 2,000 characters; "
-                "reuse the same task_id if present. "
-            )
-            result["output_hint"] = (
-                "Output is incomplete. " + recovery +
-                "For DOCX, read_docx returns next_cursor: pass it as cursor with the same options. "
-                "Do not repeat an editing script just to recover its output."
-            )
+            result["output_hint"] = "Output is incomplete; the MCP supervisor supplies continuation cursors. Do not rerun editing code."
         return result

@@ -48,12 +48,14 @@ not injected into every initial reply.
 
 ## Scope
 
-`veqtor_workspace.reading.read_docx(path, query=None, details=False, context=1, limit=6, cursor=None)`
-is an optional, read-only Python helper for the existing `run_python` tool. It pages
-through projected text, comments with anchors/replies and retained revision evidence.
+`veqtor_workspace.reading.read_docx(path, query=None, details=False, context=1, format="text")`
+is an optional, read-only Python helper for the existing `run_python` tool. Print its compact text
+to read projected paragraphs, comments with anchors/replies and optional retained revision evidence.
 Search returns matching paragraphs before neighboring context; without a query, reading stays in document order.
-Follow `next_cursor` with identical options; file changes invalidate the cursor. Long
-passages continue in chunks, within the runner's reply size. The text incorporates
+There is no helper pagination, paragraph-length cap or maximum neighborhood size.
+Repeated warnings are grouped by paragraph address. `format="data"` returns full structured
+items for custom code; the default text is not JSON. Read the runner's stored output using
+`output_cursor` if it exceeds one reply, without reparsing the document. The text incorporates
 pending edits for reading only; it is not legal approval or reconstruction of missing
 negotiation rounds. Tables use physical XML row/cell positions. Fields, numbering,
 drawings and complex structural changes have explicit coverage limits. Custom Python
@@ -121,14 +123,20 @@ placement of indistinguishable copies can be ambiguous.
   server ceiling remains the fallback. A response lost after a successful save does
   not undo it: inspect status before assuming success or failure. There is no
   written-file size cap. Actual disk space, memory,
-  libraries and model context still bound practical workloads. Output replies are bounded; full logs and
+  libraries and model context still bound practical workloads. A shared stdout/stderr text budget
+  defaults to 24,000 UTF-8 bytes. `reply_bytes` can request smaller pages; larger requests are
+  capped to the server's `--max-reply-bytes` ceiling. Raise that ceiling only after testing
+  actual client delivery, not from advertised model context capacity. Full logs and
   scripts remain in `.runs/` and are read-only to task code. Truncated replies include
   `stdout_next_cursor` and/or `stderr_next_cursor`, remaining byte counts and `output_hint`.
   Call `run_python(output_cursor=...)` alone to read the stored output; follow `next_cursor` until null.
   No Python code runs again. UTF-8 characters stay intact across page boundaries, and retrying a cursor is idempotent.
   The supervisor stops the call's process group before capturing pages; continuation stays within that captured byte prefix.
   Cursors are signed for this server connection and expire at restart; they can also read a completed task's output.
-  This grants no general access to private logs. DOCX reading separately supports its document-bound `next_cursor`.
+  This grants no general access to private logs. Continuation tokens are 62-character authenticated
+  addresses bound to the connection. Human-readable replies visibly mark each incomplete stream;
+  structuredContent retains raw text for exact reconstruction. Status fields are small overhead outside
+  the output-text budget. A Python result lists only files created/modified by that call, not old scratch files.
 - Each Python call receives `VEQTOR_UTC_NOW`, an actual UTC timestamp, alongside
   `VEQTOR_AUTHOR`. These are conveniences for new revisions/comments, not enforced
   metadata. Diagnostics check the original timezone spelling/range (without normalizing

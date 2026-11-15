@@ -147,7 +147,7 @@ def test_preview_excerpt_limits_have_readable_continuations(tmp_path):
     assert guidance['affected_paragraphs'] == 7 and guidance['remaining_paragraphs'] == 2
     assert len(guidance['fragments']) == 5
     assert all(len(f['proposed_text']) == 900 and not f['text_complete'] for f in guidance['fragments'])
-    assert 'next_cursor' in guidance['read_more']
+    assert 'run_python(output_cursor=' in guidance['read_more']
     full = ''.join(x['text'] for x in read_all(tmp_path / 'candidate.docx') if x['type'] == 'paragraph')
     assert full == ''.join(f'Clause {i} ' + 'long text ' * 110 for i in range(7))
     assert 'gone' not in full

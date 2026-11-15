@@ -1,25 +1,62 @@
 # SPDX-License-Identifier: Apache-2.0
 """Read evidence, not a reconstructed negotiation history or a Word layout."""
 
-import hashlib
 import json
 from collections import Counter
 
 import pytest
 from test_checks import NS, check, comments, docx, mark, math, para, rev, run
 
-from veqtor_workspace.reading import read_docx
+from veqtor_workspace.reading import read_docx as read_document
+
+
+def read_docx(path, **options):
+    return read_document(path, format="data", **options)
 
 
 def read_all(path, **options):
-    items, cursor = [], None
-    while True:
-        page = read_docx(path, cursor=cursor, **options)
-        assert len(json.dumps(page).encode()) <= 10_000
-        items.extend(page["items"])
-        cursor = page["next_cursor"]
-        if cursor is None:
-            return items
+    return read_docx(path, **options)["items"]
+
+
+def test_compact_reader_keeps_complete_large_unicode_and_unbounded_neighborhood(tmp_path):
+    texts = [f"Пункт {i}: " + "договор и условия " * 75 for i in range(50)]
+    texts[25] += " FIND_ME"
+    path = docx(tmp_path / "whole.docx", [para(run(t)) for t in texts])
+    output = read_document(path, query="FIND_ME", context=100)
+    assert isinstance(output, str)
+    for i, text in enumerate(texts, 1):
+        assert f"p{i} {text}" in output
+    assert output.index(texts[25]) < output.index(texts[0])
+    assert len(output.encode()) > 24_000
+    data = read_docx(path, query="FIND_ME", context=100)
+    assert len(data["items"]) == 50 and "next_cursor" not in data
+    assert sum(len(x["text"]) for x in data["items"]) == sum(map(len, texts))
+
+
+def test_compact_reader_groups_warnings_and_keeps_comment_revision_provenance(tmp_path):
+    paragraphs = [para('<w:fldSimple w:instr="PAGE">' + run('1') + '</w:fldSimple>',
+                       rev('ins', str(i + 10), 'Earlier Author', run(f' clause {i}')),
+                       '<w:commentRangeStart w:id="0"/>' if i == 0 else '', run(' anchored'),
+                       '<w:commentRangeEnd w:id="0"/>' if i == 0 else '') for i in range(40)]
+    note = '<w:comment w:id="0" w:author="Reviewer" w:date="2025-01-02T03:04:05Z">' + para(run('Keep this comment')) + '</w:comment>'
+    path = docx(tmp_path / 'evidence.docx', paragraphs, comments(note))
+    data = read_docx(path, details=True)
+    text = read_document(path, details=True)
+    warnings = {w for x in data['items'] if x['type'] == 'paragraph' for w in x['warnings']}
+    assert warnings
+    for warning in warnings:
+        assert text.count(warning) == 1
+    assert 'p1-p40' in text
+    assert text.count('Earlier Author') == 40
+    assert 'Reviewer' in text and '2025-01-02T03:04:05Z' in text and 'Keep this comment' in text
+    assert 'anchor excerpt:  anchored' in text
+
+
+@pytest.mark.parametrize('options', [{'context': -1}, {'context': True}, {'format': 'unknown'}])
+def test_invalid_reader_options_are_explicit(tmp_path, options):
+    path = docx(tmp_path / 'source.docx', [para(run('Source'))])
+    with pytest.raises(ValueError):
+        read_document(path, **options)
 
 
 @pytest.mark.parametrize("match_in", ["text", "revision", "comment"])
@@ -36,24 +73,20 @@ def test_search_starts_with_match_before_neighbor_history_and_keeps_all_items(tm
     first = read_docx(path, query="needle", details=True)
     assert first["items"][0]["type"] == "paragraph"
     assert first["items"][0]["text"].startswith("Selected clause")
-    assert first["order"] == "matches_then_context" and first["next_cursor"]
+    assert first["order"] == "matches_then_context"
     searched = read_all(path, query="needle", details=True)
     sequential = read_all(path, details=True)
     assert Counter(json.dumps(item, sort_keys=True) for item in searched) == Counter(
         json.dumps(item, sort_keys=True) for item in sequential)
 
 
-def test_multiple_search_matches_precede_overlapping_context_and_old_cursors_are_rejected(tmp_path):
+def test_multiple_search_matches_precede_overlapping_context(tmp_path):
     text = ["Before", "needle first", "Between", "needle second", "After"]
     path = docx(tmp_path / "multiple.docx", [para(run(t)) for t in text])
-    searched = read_all(path, query="needle", limit=1)
+    searched = read_all(path, query="needle")
     assert [item["text"] for item in searched] == [text[1], text[3], text[0], text[2], text[4]]
-    assert [item["text"] for item in read_all(path, limit=1)] == text
+    assert [item["text"] for item in read_all(path)] == text
     assert read_docx(path)["order"] == "document"
-    old_signature = hashlib.sha256(json.dumps(
-        [hashlib.sha256(path.read_bytes()).hexdigest(), "needle", False, 1, 1]).encode()).hexdigest()[:24]
-    with pytest.raises(ValueError, match="cursor"):
-        read_docx(path, query="needle", limit=1, cursor=f"{old_signature}:1")
 
 
 def test_ten_authors_nested_edits_and_retained_history(tmp_path):
@@ -70,19 +103,18 @@ def test_ten_authors_nested_edits_and_retained_history(tmp_path):
     assert read_docx(path, query="removed", context=0)["matched_paragraphs"] == 1
 
 
-def test_long_unicode_text_continues_and_changed_source_invalidates_cursor(tmp_path):
+def test_long_unicode_is_complete_and_a_new_read_sees_latest_saved_text(tmp_path):
     text = "Очень длинное условие договора. " * 500
     path = docx(tmp_path / "long.docx", [para(run(text))])
     first = read_docx(path)
-    assert first["next_cursor"]
+    assert first["items"][0]["text"] == text
     pieces = [x for x in read_all(path) if x["type"] == "paragraph"]
     assert "".join(x["text"] for x in pieces) == text
-    assert pieces[-1]["text_continues"] is False
-    with pytest.raises(ValueError, match="cursor"):
-        read_docx(path, query="different", cursor=first["next_cursor"])
+    assert len(pieces) == 1
+    assert text in read_document(path)
     docx(path, [para(run(text + "changed"))])
-    with pytest.raises(ValueError, match="cursor"):
-        read_docx(path, cursor=first["next_cursor"])
+    assert read_docx(path)["items"][0]["text"] == text + "changed"
+    assert read_docx(path)["sha256"] != first["sha256"]
 
 
 def test_comment_range_reply_and_unlocated_comment(tmp_path):

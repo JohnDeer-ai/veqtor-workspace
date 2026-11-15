@@ -15,7 +15,7 @@ import anyio
 
 from veqtor_workspace.checks import check_docx
 from veqtor_workspace.files import atomic_save
-from veqtor_workspace.output import OutputCursors, collect_output, read_output
+from veqtor_workspace.output import OutputCursors, collect_output, read_output, reply_limit
 from veqtor_workspace.preview import read_preview, render_pair, select_pages
 from veqtor_workspace.runner import Workspace
 from veqtor_workspace.tasks import DocumentTasks
@@ -48,15 +48,18 @@ class Operations:
         try:
             arguments = dict(arguments)
             if operation == "run_python":
+                budget = reply_limit(arguments.pop("reply_bytes", None), w.max_reply_bytes)
                 cursor = arguments.pop("output_cursor", None)
                 if cursor is not None:
                     if arguments.get("code") is not None or arguments.get("task_id") is not None or arguments.get("read_paths"):
                         raise ValueError("Use output_cursor alone, without code, task_id or read_paths. Continuation never executes Python.")
                     arguments = self.output_cursors.decode(cursor)
                     operation = "read_output"
+                arguments["reply_bytes"] = budget
             payload = {"root": str(w.root), "python": str(w.python), "author": w.author,
                        "project": str(w.project) if w.project else None,
                        "call_timeout_seconds": w.call_timeout_seconds,
+                       "max_reply_bytes": w.max_reply_bytes,
                        "dynamic": w.dynamic, "read_paths": [str(p) for p in w.read_paths],
                        "preview_config": str(w.preview_config),
                        "operation": operation, "arguments": arguments}
@@ -85,7 +88,8 @@ class Operations:
                 process = None
                 root = w.root / ".runs/documents" / arguments["task_id"] if arguments.get("task_id") else w.root
                 result.pop("output_hint", None)
-                result.update(collect_output(root, result["run_id"]))
+                result.update(collect_output(root, result["run_id"], budget))
+                result["reply_bytes"] = budget
                 for stream, page in result.pop("_output_pages", {}).items():
                     result[f"{stream}_next_cursor"] = self.output_cursors.encode({
                         "run_id": result["run_id"], "task_id": arguments.get("task_id"), "stream": stream, **page})
@@ -98,6 +102,7 @@ class Operations:
             elif operation == "read_output":
                 offset = result.pop("_next_offset")
                 result["next_cursor"] = self.output_cursors.encode({**arguments, "offset": offset}) if result["remaining_bytes"] else None
+                result["reply_bytes"] = budget
             return result
         except TimeoutError:
             return {"status": "timed_out", "timed_out": True,
@@ -168,7 +173,7 @@ def perform(w: Workspace, operation: str, args: dict) -> dict:
         try:
             cached = json.loads(receipt.read_text())
             result = cached["report"]
-            reused_check = (cached["version"] == "0.0.19" and cached["author"] == w.author
+            reused_check = (cached["version"] == "0.0.20" and cached["author"] == w.author
                             and cached["changes_start"] == changes_start
                             and result["original_sha256"] == preview["files"]["original"]["sha256"]
                             and result["candidate_sha256"] == preview["files"]["candidate"]["sha256"])
@@ -185,7 +190,7 @@ def perform(w: Workspace, operation: str, args: dict) -> dict:
                 and result.get("original_sha256") == preview["files"]["original"]["sha256"]
                 and result.get("candidate_sha256") == preview["files"]["candidate"]["sha256"]):
             with atomic_save(Path(preview["directory"]) / "check.json") as temporary:
-                temporary.write_text(json.dumps({"version": "0.0.19", "author": w.author,
+                temporary.write_text(json.dumps({"version": "0.0.20", "author": w.author,
                                                  "changes_start": changes_start, "report": result}))
         if reused_check:
             result = {key: result[key] for key in ("status", "summary", "original_sha256", "candidate_sha256",
@@ -210,7 +215,8 @@ def main():
                       Path(payload["project"]) if payload["project"] else None,
                       payload["call_timeout_seconds"], managed_process_group=True,
                       dynamic=payload.get("dynamic", False), read_paths=payload.get("read_paths"),
-                      preview_config=Path(payload["preview_config"]) if payload.get("preview_config") else None)
+                      preview_config=Path(payload["preview_config"]) if payload.get("preview_config") else None,
+                      max_reply_bytes=payload.get("max_reply_bytes", 24_000))
         reply = {"result": perform(w, payload["operation"], payload["arguments"])}
     except Exception as exc:  # noqa: BLE001 - serialize worker failures across the process boundary
         reply = {"error": f"{type(exc).__name__}: {exc}"}

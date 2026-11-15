@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Read-only, paged DOCX evidence. Pending markup is not a negotiation-round log.
+"""Read-only DOCX evidence. Pending markup is not a negotiation-round log.
 
 One optional helper for model-written Python; no file writes or new MCP tool.
 Paragraph/table locations refer to the package, not Word pages or logical grid cells.
@@ -166,8 +166,8 @@ def preview_guidance(roots, original):
         text_view="Proposed text: includes pending insertions and excludes deletions, including earlier rounds. "
                   "Read-only text projection, not a clean DOCX or Word layout; no revisions are accepted.",
         remaining_paragraphs=max(0, len(affected) - 5),
-        read_more="Use read_docx(candidate, query='distinctive clause text', context=0); "
-                  "follow next_cursor with the same options. query=None reads all passages.",
+        read_more="Print read_docx(candidate, query='distinctive clause text', context=0); "
+                  "if output continues, use run_python(output_cursor=...). query=None reads all passages.",
     )
     for r in affected[:5]:
         result["fragments"].append({"id": r["id"], "location": r["location"],
@@ -228,24 +228,19 @@ def _comments(roots, records):
     return result
 
 
-def _chunks(item):
-    text = item["text"]
-    for offset in range(0, max(len(text), 1), 900):
-        yield {**item, "text": text[offset:offset + 900], "text_offset": offset,
-               "text_length": len(text), "text_continues": offset + 900 < len(text)}
+def read_docx(path, query=None, *, details=False, context=1, format="text"):
+    """Read complete passages as compact text; format='data' returns structured evidence.
 
-
-def read_docx(path, query=None, *, details=False, context=1, limit=6, cursor=None):
-    """Read selected passages, their comments and optionally retained revision evidence.
-
-    print(json.dumps(read_docx(path, query='8.8', details=True), ensure_ascii=False)).
-    Search returns matching paragraphs before neighboring context; query=None uses document order.
-    Repeat with the returned next_cursor and identical options until it is None.
-    The cursor is bound to file bytes and options. Output stays below runner stdout's
-    normal 12 KB reply; long text is continued, never silently cut. No edits/acceptance.
+    print(read_docx(path, query='8.8', details=True, context=5)).
+    query=None reads the whole document. context is any nonnegative number of adjacent
+    XML paragraphs. Matching paragraphs come first. No element, text-length or page cap:
+    run_python stores the full output and supplies its single output_cursor continuation.
+    Stable paragraph IDs refer to this file version. No file edits or revision acceptance.
     """
-    if not isinstance(limit, int) or not 1 <= limit <= 20 or not isinstance(context, int) or not 0 <= context <= 3:
-        raise ValueError("Use limit 1–20 and context 0–3; read further pages with next_cursor.")
+    if type(context) is not int or context < 0:
+        raise ValueError("context must be a nonnegative integer.")
+    if format not in ("text", "data"):
+        raise ValueError("format must be 'text' or 'data'.")
     if query is not None and (not isinstance(query, str) or not normalized(query)):
         raise ValueError("query must be nonempty text or None.")
     path = Path(path)
@@ -255,14 +250,6 @@ def read_docx(path, query=None, *, details=False, context=1, limit=6, cursor=Non
         raise ValueError("Document changed while reading; read the saved version again.")
     records = paragraphs(roots)
     comments = _comments(roots, records)
-    signature = hashlib.sha256(json.dumps(
-        ["matches_first_v1", before_hash, query, details, context, limit]).encode()).hexdigest()[:24]
-    offset = 0
-    if cursor is not None:
-        stamp, sep, value = str(cursor).partition(":")
-        if stamp != signature or not sep or not value.isdecimal():
-            raise ValueError("Reading cursor does not match this document/options; start again without it.")
-        offset = int(value)
     related = {r["id"]: [c for c in comments if r["id"] in c["paragraphs"]] for r in records}
     query_key = normalized(query) if query else None
     hits = [i for i, r in enumerate(records) if query_key is None or query_key in normalized("\n".join(
@@ -275,18 +262,18 @@ def read_docx(path, query=None, *, details=False, context=1, limit=6, cursor=Non
     items, used_comments = [], set()
     for i in selected:
         r = records[i]
-        items.extend(_chunks({"type": "paragraph", "id": r["id"], "location": r["location"], "text": r["text"],
-                              "revision_count": len(r["revisions"]), "warnings": r["warnings"]}))
+        items.append({"type": "paragraph", "id": r["id"], "location": r["location"], "text": r["text"],
+                      "revision_count": len(r["revisions"]), "warnings": r["warnings"]})
         if details:
             for revision in r["revisions"]:
-                items.extend(_chunks({"type": "revision", "paragraph": r["id"], **revision}))
+                items.append({"type": "revision", "paragraph": r["id"], **revision})
         for comment in related[r["id"]]:
             if comment["id"] not in used_comments:
-                items.extend(_chunks(comment))
+                items.append(comment)
                 used_comments.add(comment["id"])
     for comment in comments:
         if comment["anchor_status"] == "not_located" and (query_key is None or query_key in normalized(comment["text"])):
-            items.extend(_chunks(comment))
+            items.append(comment)
     result = {"sha256": before_hash, "view": "text_with_pending_changes_incorporated_not_approval",
               "order": "matches_then_context" if query_key is not None else "document",
               "scope": "Body, tables, headers/footers, footnotes/endnotes and located comments. Retained markup only; "
@@ -294,19 +281,67 @@ def read_docx(path, query=None, *, details=False, context=1, limit=6, cursor=Non
               "paragraphs": len(records), "matched_paragraphs": len(hits), "comments": len(comments),
               "unread_embedded_parts": sorted(n for n in roots if _is_story(n) and any(
                   e.tag == W + "altChunk" for e in roots[n].iter())),
-              "items": [], "next_cursor": None}
-    if offset > len(items):
-        raise ValueError("Reading cursor is outside this result.")
-    for index in range(offset, min(offset + limit, len(items))):
-        trial = {**result, "items": [*result["items"], items[index]], "next_cursor": f"{signature}:{index + 1}"}
-        if len(json.dumps(trial).encode()) > 10_000:
-            if not result["items"]:
-                raise ValueError("This item has unusually large metadata; inspect this fragment with custom Python.")
-            break
-        result["items"].append(items[index])
-    consumed = offset + len(result["items"])
-    result["next_cursor"] = f"{signature}:{consumed}" if consumed < len(items) else None
-    return result
+              "items": items}
+    return _compact(result) if format == "text" else result
+
+
+def _compact(result):
+    """Display evidence without repeating field names, warning text or cell locations."""
+    parts = sorted({x["location"]["part"] for x in result["items"] if x["type"] == "paragraph"})
+    aliases = {p: ("" if p == "word/document.xml" else f"s{i}:") for i, p in enumerate(parts, 1)}
+
+    def label(pid):
+        part, _, number = pid.rpartition("#p")
+        return f"{aliases.get(part, part + '#')}p{number}"
+
+    def ranges(ids):
+        grouped = {}
+        for pid in ids:
+            part, _, number = pid.rpartition("#p")
+            grouped.setdefault(part, set()).add(int(number))
+        labels = []
+        for part, numbers in grouped.items():
+            groups = []
+            for n in sorted(numbers):
+                if groups and groups[-1][-1] + 1 == n:
+                    groups[-1].append(n)
+                else:
+                    groups.append([n])
+            labels.extend(label(f"{part}#p{g[0]}") + (f"-{label(f'{part}#p{g[-1]}')}" if len(g) > 1 else "")
+                          for g in groups)
+        return ",".join(labels) or "unlocated"
+
+    lines = ["DOCX text with pending insertions included and deletions excluded; no revisions accepted.",
+             f"SHA256 {result['sha256']}; order={result['order']}; matches={result['matched_paragraphs']}",
+             "Locations use XML paragraphs/table rows/cells, not Word pages or final grid coordinates."]
+    lines.extend(f"{prefix}pN = {part}#pN" for part, prefix in aliases.items())
+    warnings, last_location = {}, None
+    for item in result["items"]:
+        if item["type"] == "paragraph":
+            loc = item["location"]
+            location = tuple((k, loc[k]) for k in ("part", "table", "row", "cell", "note_id") if k in loc)
+            if location != last_location:
+                short = {"table": "t", "row": "r", "cell": "c", "note_id": "note"}
+                lines.append("[" + (aliases.get(loc["part"]) or "body") + " "
+                             + " ".join(f"{short[k]}{v}" for k, v in location if k != "part") + "]")
+                last_location = location
+            lines.append(f"{label(item['id'])} {item['text']}")
+            for warning in item["warnings"]:
+                warnings.setdefault(warning, []).append(item["id"])
+        elif item["type"] == "revision":
+            meta = {k: item[k] for k in ("kind", "id", "author", "date", "parents")}
+            lines.append("  revision " + json.dumps(meta, ensure_ascii=False, separators=(",", ":")) + " " + item["text"])
+        else:
+            meta = {k: item[k] for k in ("id", "author", "date", "parent_comment_id", "resolved") if item[k] is not None}
+            lines.append("  comment " + json.dumps(meta, ensure_ascii=False, separators=(",", ":"))
+                         + f" at {ranges(item['paragraphs'])}: " + item["text"])
+            if item["anchor_markup_excerpt"]:
+                lines.append("    anchor excerpt: " + item["anchor_markup_excerpt"])
+    if result["unread_embedded_parts"]:
+        lines.append("Unexpanded embedded content: " + ", ".join(result["unread_embedded_parts"]))
+    lines.append("Coverage: " + result["scope"])
+    lines.extend(f"NOTE {ranges(ids)}: {warning}" for warning, ids in warnings.items())
+    return "\n".join(lines)
 
 
 def change_summary(before, after, start=0):
