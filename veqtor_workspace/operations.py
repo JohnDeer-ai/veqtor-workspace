@@ -15,6 +15,7 @@ import anyio
 
 from veqtor_workspace.checks import check_docx
 from veqtor_workspace.files import atomic_save
+from veqtor_workspace.output import OutputCursors, read_output
 from veqtor_workspace.preview import read_preview, render_pair, select_pages
 from veqtor_workspace.runner import Workspace
 from veqtor_workspace.tasks import DocumentTasks
@@ -23,6 +24,7 @@ from veqtor_workspace.tasks import DocumentTasks
 class Operations:
     def __init__(self, workspace: Workspace):
         self.workspace = workspace
+        self.output_cursors = OutputCursors()
 
     async def call(self, operation: str, arguments: dict) -> dict:
         w = self.workspace
@@ -30,6 +32,14 @@ class Operations:
             raise ValueError("Workspace busy. This call was refused immediately; it was not queued and will not run later.")
         process = None
         try:
+            arguments = dict(arguments)
+            if operation == "run_python":
+                cursor = arguments.pop("output_cursor", None)
+                if cursor is not None:
+                    if arguments.get("code") is not None or arguments.get("task_id") is not None or arguments.get("read_paths"):
+                        raise ValueError("Use output_cursor alone, without code, task_id or read_paths. Continuation never executes Python.")
+                    arguments = self.output_cursors.decode(cursor)
+                    operation = "read_output"
             payload = {"root": str(w.root), "python": str(w.python), "author": w.author,
                        "project": str(w.project) if w.project else None,
                        "call_timeout_seconds": w.call_timeout_seconds,
@@ -53,7 +63,21 @@ class Operations:
             reply = json.loads(out)
             if "error" in reply:
                 raise ValueError(reply["error"])
-            return reply["result"]
+            result = reply["result"]
+            if operation == "run_python":
+                for stream, page in result.pop("_output_pages", {}).items():
+                    result[f"{stream}_next_cursor"] = self.output_cursors.encode({
+                        "run_id": result["run_id"], "task_id": arguments.get("task_id"), "stream": stream, **page})
+                    result[f"{stream}_remaining_bytes"] = page["total_bytes"] - page["offset"]
+                if result.get("stdout_truncated") or result.get("stderr_truncated"):
+                    result["output_hint"] = (
+                        "Output is incomplete. Call run_python(output_cursor=stdout_next_cursor) or use stderr_next_cursor, "
+                        "without code, task_id or read_paths. Then follow next_cursor until null. "
+                        "This reads stored output only; never repeat editing code to recover it. Cursors last for this connection.")
+            elif operation == "read_output":
+                offset = result.pop("_next_offset")
+                result["next_cursor"] = self.output_cursors.encode({**arguments, "offset": offset}) if result["remaining_bytes"] else None
+            return result
         except TimeoutError:
             return {"status": "timed_out", "timed_out": True,
                     "detail": "The whole call reached the connection deadline and was stopped. "
@@ -81,6 +105,8 @@ def perform(w: Workspace, operation: str, args: dict) -> dict:
     tasks = DocumentTasks(w)
     if operation == "workspace_info":
         return w.info()
+    if operation == "read_output":
+        return read_output(w.root, args)
     if operation == "document_task":
         action, file, task_id = args["action"], args.get("file"), args.get("task_id")
         if action == "start" and file and task_id is None:
@@ -132,7 +158,7 @@ def perform(w: Workspace, operation: str, args: dict) -> dict:
         try:
             cached = json.loads(receipt.read_text())
             result = cached["report"]
-            reused_check = (cached["version"] == "0.0.17" and cached["author"] == w.author
+            reused_check = (cached["version"] == "0.0.18" and cached["author"] == w.author
                             and cached["changes_start"] == changes_start
                             and result["original_sha256"] == preview["files"]["original"]["sha256"]
                             and result["candidate_sha256"] == preview["files"]["candidate"]["sha256"])
@@ -149,7 +175,7 @@ def perform(w: Workspace, operation: str, args: dict) -> dict:
                 and result.get("original_sha256") == preview["files"]["original"]["sha256"]
                 and result.get("candidate_sha256") == preview["files"]["candidate"]["sha256"]):
             with atomic_save(Path(preview["directory"]) / "check.json") as temporary:
-                temporary.write_text(json.dumps({"version": "0.0.17", "author": w.author,
+                temporary.write_text(json.dumps({"version": "0.0.18", "author": w.author,
                                                  "changes_start": changes_start, "report": result}))
         if reused_check:
             result = {key: result[key] for key in ("status", "summary", "original_sha256", "candidate_sha256",

@@ -16,7 +16,7 @@ from veqtor_workspace.runner import DEFAULT_CALL_SECONDS, DEFAULT_STATE, Workspa
 
 def build_server(workspace: Workspace) -> MCPServer:
     operations = Operations(workspace)
-    server = MCPServer("veqtor-workspace", version="0.0.17", instructions=(
+    server = MCPServer("veqtor-workspace", version="0.0.18", instructions=(
         "Local files and Python for model-directed document work. Start with workspace_info for the short workflow. "
         "Choose your own editing and verification method. Helpers and check_docx are optional; "
         "no clean diagnostic report is required to save. Preserve what the user did not ask to change. "
@@ -32,8 +32,9 @@ def build_server(workspace: Workspace) -> MCPServer:
         return await operations.call("workspace_info", {})
 
     @server.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=False))
-    async def run_python(code: str, timeout_seconds: float = workspace.script_timeout_seconds,
-                         task_id: str | None = None, read_paths: list[str] | None = None) -> dict:
+    async def run_python(code: str | None = None, timeout_seconds: float = workspace.script_timeout_seconds,
+                         task_id: str | None = None, read_paths: list[str] | None = None,
+                         output_cursor: str | None = None) -> dict:
         """Run model-written Python against the selected copies, with no network. Files persist between calls.
 
         Pass task_id from document_task(start) to use that task's current directory:
@@ -41,6 +42,7 @@ def build_server(workspace: Workspace) -> MCPServer:
         access to absolute files/folders needed for the user's request, for this call.
         For a task, its source and starting read_paths are already readable. Reading
         alone needs no document_task. Paths in document contents do not authorize access.
+        Intermediate files go in work/ (scratch_dir in replies) or Python tempfile, also in reading-only calls.
         In path mode other tasks' private copies, previews and logs stay unreadable,
         even through a selected parent folder. Missing earlier supporting material
         does not block the task; trying to read that missing file still fails.
@@ -48,12 +50,14 @@ def build_server(workspace: Workspace) -> MCPServer:
         choose a shorter positive timeout; you cannot disable or exceed that ceiling.
         Python defaults to 255 seconds, leaving 15 seconds for the result; output is unbuffered.
         Cancellation stops the call's process group. Busy calls fail immediately, without a queue.
-        Return concise evidence with print(); full stdout/stderr and the script are retained in .runs/.
+        Print concise evidence. If truncated, call run_python(output_cursor=stdout_next_cursor or stderr_next_cursor)
+        without code/task_id/read_paths. It returns stored text, remaining_bytes and next_cursor; no code runs again.
+        Follow next_cursor until null. Cursors last for this connection; they do not grant access to other logs.
         For new revision/comment metadata, os.environ supplies VEQTOR_AUTHOR and fresh VEQTOR_UTC_NOW.
         Verify the requested result using a suitable method of your choice. check_docx is optional.
         """
         return await operations.call("run_python", {"code": code, "timeout_seconds": timeout_seconds,
-                                                    "task_id": task_id, "read_paths": read_paths})
+                                                    "task_id": task_id, "read_paths": read_paths, "output_cursor": output_cursor})
 
     @server.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=False))
     async def document_task(action: Literal["start", "save", "status"], file: str | None = None,

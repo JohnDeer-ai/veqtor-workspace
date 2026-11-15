@@ -24,8 +24,13 @@ Use whole words/numbers for readable redlines, with character edits when appropr
 A substantially rewritten phrase can use a whole-phrase replacement. Preserve word boundaries.
 
 Text PDFs can be read with the bundled `pypdf`. Image-only scans need OCR, which is not bundled.
-Print relevant evidence in manageable portions. If truncated, follow `output_hint` to continue
-reading; do not repeat edits to recover output. `read_docx` already supports `next_cursor`.
+For intermediate extracts, write `Path('work/extract.txt')` or use Python `tempfile`.
+`scratch_dir` gives the exact writable folder, including in reading-only calls; the cwd root and `/tmp` are not writable.
+Files in `work/` persist between calls in that context; an editing task has its own `work/`.
+If Python output is truncated, call `run_python(output_cursor=stdout_next_cursor)` or use `stderr_next_cursor`,
+without code, task_id or read_paths. Each page returns stored `text`, byte counts and `next_cursor` (null at the end).
+Reusing a cursor rereads the same page; it never executes code. Cursors expire when the server connection restarts.
+This also works after a task is saved. Other private logs remain inaccessible. `read_docx` has its own document cursor.
 
 ## Direct OOXML editing examples
 

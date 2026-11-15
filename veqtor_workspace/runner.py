@@ -14,9 +14,9 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from veqtor_workspace.output import MAX_REPLY, read_stream
 from veqtor_workspace.preview import renderer_info
 
-MAX_REPLY = 12_000
 DEFAULT_CALL_SECONDS = 270
 DEFAULT_STATE = Path.home() / "Library/Application Support/Veqtor Workspace"
 
@@ -94,18 +94,21 @@ class Workspace:
 
     def info(self) -> dict:
         return {
-            "prototype": "0.0.17", "author": self.author,
+            "prototype": "0.0.18", "author": self.author,
             "access_mode": "paths" if self.dynamic else "legacy_folder",
             "read_paths": [str(p) for p in self.read_paths],
             "project_folder": str(self.project) if self.project else None,
             "cwd": str(self.root), "python": str(self.python),
+            "scratch_dir": str(self.root / "work"),
+            "scratch_usage": "Intermediate extracts may be written in work/ even without an editing task. "
+                             "Use pathlib.Path('work/extract.txt') or Python tempfile; not the cwd root or /tmp.",
             "inputs": sorted(str(p.relative_to(self.root)) for p in (self.root / "inputs").rglob("*") if p.is_file()),
             "outputs": self.outputs(),
             "recipe": str(self.package / "veqtor_workspace/RECIPE.md"),
             "recipe_text": (self.package / "veqtor_workspace/RECIPE.md").read_text(encoding="utf-8"),
             "reference": str(self.package / "veqtor_workspace/REFERENCE.md"),
             "execution": "Fresh Python process per call; files persist. Project and inputs read-only, work writable, no network. "
-                         "Use document_task(start), run_python with task_id, then document_task(save); "
+                         "For editing use document_task(start), run_python with task_id, then document_task(save); "
                          "file=... on save creates a new output. Diagnostics and preview are optional.",
             "limits": {"default_timeout_seconds": self.script_timeout_seconds,
                        "max_timeout_seconds": self.call_timeout_seconds,
@@ -202,13 +205,16 @@ class Workspace:
                     pass
                 process.wait()
         result = {"run_id": run_id, "exit_code": process.returncode, "timed_out": timed_out,
-                  "artifacts": self.outputs(), "verification": "not_run"}
+                  "artifacts": self.outputs(), "verification": "not_run", "scratch_dir": str(self.root / "work")}
         for kind in ("stdout", "stderr"):
             path = stem.with_suffix(f".{kind}")
-            with path.open("rb") as stream:
-                result[kind] = stream.read(MAX_REPLY).decode("utf-8", errors="replace")
-            result[f"{kind}_truncated"] = path.stat().st_size > MAX_REPLY
+            page = read_stream(path)
+            result[kind] = page["text"]
+            result[f"{kind}_truncated"] = page["remaining_bytes"] > 0
             result[f"{kind}_path"] = str(path.relative_to(self.root))
+            if page["remaining_bytes"]:
+                result.setdefault("_output_pages", {})[kind] = {
+                    "offset": page["_next_offset"], "total_bytes": page["total_bytes"]}
         if result["stdout_truncated"] or result["stderr_truncated"]:
             recovery = (
                 "Full logs are private in calls without task_id; read only the needed source range in the next call. "

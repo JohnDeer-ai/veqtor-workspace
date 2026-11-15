@@ -34,7 +34,9 @@ without `task_id`. No new editing task is needed just to inspect the saved file.
 No manual copying into inputs/ is needed.
 Optional `read_paths` on start selects supporting files/folders. `run_python(read_paths=[...])`
 can read selected material without creating an editing task; additional grants last only
-that call. Private copies, previews and logs of other tasks are not readable by Python,
+that call. `scratch_dir` identifies the existing writable `work/` folder for intermediate
+extracts, even without an editing task; Python `tempfile` uses `work/.tmp/`. A task has its own scratch folder.
+Private copies, previews and logs of other tasks are not readable by Python,
 even when a selected parent contains the private storage. A task keeps access to its own
 copies and logs. Moving supporting material does not block checking or editing these
 copies; a later attempt to read the moved material fails normally. No shared current folder
@@ -121,8 +123,11 @@ placement of indistinguishable copies can be ambiguous.
   written-file size cap. Actual disk space, memory,
   libraries and model context still bound practical workloads. Output replies are bounded; full logs and
   scripts remain in `.runs/` and are read-only to task code. Truncated replies include
-  `output_hint`: read task logs in small portions, or narrow the source read when running
-  without a task (its logs stay private). DOCX reading already supports `next_cursor`.
+  `stdout_next_cursor` and/or `stderr_next_cursor`, remaining byte counts and `output_hint`.
+  Call `run_python(output_cursor=...)` alone to read the stored output; follow `next_cursor` until null.
+  No Python code runs again. UTF-8 characters stay intact across page boundaries, and retrying a cursor is idempotent.
+  Cursors are signed for this server connection and expire at restart; they can also read a completed task's output.
+  This grants no general access to private logs. DOCX reading separately supports its document-bound `next_cursor`.
 - Each Python call receives `VEQTOR_UTC_NOW`, an actual UTC timestamp, alongside
   `VEQTOR_AUTHOR`. These are conveniences for new revisions/comments, not enforced
   metadata. Diagnostics check the original timezone spelling/range (without normalizing
