@@ -314,6 +314,8 @@ def _compact(result):
     lines = ["DOCX text with pending insertions included and deletions excluded; no revisions accepted.",
              f"SHA256 {result['sha256']}; order={result['order']}; matches={result['matched_paragraphs']}",
              "Locations use XML paragraphs/table rows/cells, not Word pages or final grid coordinates."]
+    if any(x.get("revision_count", 0) for x in result["items"]):
+        lines.append("[rN] counts retained revision marks, not negotiation rounds; details=True shows history.")
     lines.extend(f"{prefix}pN = {part}#pN" for part, prefix in aliases.items())
     warnings, last_location = {}, None
     for item in result["items"]:
@@ -325,7 +327,8 @@ def _compact(result):
                 lines.append("[" + (aliases.get(loc["part"]) or "body") + " "
                              + " ".join(f"{short[k]}{v}" for k, v in location if k != "part") + "]")
                 last_location = location
-            lines.append(f"{label(item['id'])} {item['text']}")
+            revision_mark = f"[r{item['revision_count']}] " if item["revision_count"] else ""
+            lines.append(f"{label(item['id'])} {revision_mark}{item['text']}")
             for warning in item["warnings"]:
                 warnings.setdefault(warning, []).append(item["id"])
         elif item["type"] == "revision":

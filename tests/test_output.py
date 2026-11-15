@@ -281,6 +281,20 @@ def test_results_list_only_current_artifacts_and_do_not_imply_mandatory_verifica
     assert result['artifacts'] == ['work/previous.txt']
 
 
+@pytest.mark.parametrize(('code', 'expected'), [
+    ("Path('work/z-new.txt').write_text('new')", ['work/z-new.txt']),
+    ("Path('work/file-100.txt').write_text('updated')", ['work/file-100.txt']),
+    ("Path('work/file-000.txt').unlink()", []),
+])
+def test_artifacts_are_current_changes_even_with_more_than_100_existing_files(tmp_path, code, expected):
+    w = Workspace(tmp_path / 'state', Path(os.environ.get('VEQTOR_TEST_PYTHON', sys.executable)), 'Test', dynamic=True)
+    for i in range(101):
+        (w.root / 'work' / f'file-{i:03}.txt').write_text('unchanged')
+    result = w.run('from pathlib import Path\n' + code)
+    assert result['exit_code'] == 0, result['stderr']
+    assert result['artifacts'] == expected
+
+
 @pytest.mark.parametrize("failure", ["missing", "changed"])
 def test_missing_or_changed_output_does_not_rerun_code(tmp_path, failure):
     w = Workspace(tmp_path / "state", Path(os.environ.get("VEQTOR_TEST_PYTHON", sys.executable)), "Test", dynamic=True)

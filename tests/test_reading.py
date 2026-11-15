@@ -52,6 +52,23 @@ def test_compact_reader_groups_warnings_and_keeps_comment_revision_provenance(tm
     assert 'anchor excerpt:  anchored' in text
 
 
+def test_compact_reader_signals_retained_revisions_without_expanding_history(tmp_path):
+    path = docx(tmp_path / 'pending.docx', [
+        para(run('Unchanged')),
+        para(run('Payment '), rev('del', '1', 'Earlier Author', run('30', 'delText')),
+             rev('ins', '2', 'Later Author', run('45')), run(' days')),
+    ])
+    text = read_document(path)
+    assert 'p1 Unchanged' in text
+    assert 'p2 [r2] Payment 45 days' in text
+    assert 'details=True' in text
+    assert 'Earlier Author' not in text and 'Later Author' not in text
+    details = read_document(path, details=True)
+    assert 'p2 [r2] Payment 45 days' in details
+    assert 'Earlier Author' in details and 'Later Author' in details
+    assert [x['revision_count'] for x in read_all(path)] == [0, 2]
+
+
 @pytest.mark.parametrize('options', [{'context': -1}, {'context': True}, {'format': 'unknown'}])
 def test_invalid_reader_options_are_explicit(tmp_path, options):
     path = docx(tmp_path / 'source.docx', [para(run('Source'))])

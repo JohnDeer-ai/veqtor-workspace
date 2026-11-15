@@ -889,7 +889,7 @@ wheels = [
 
 [[package]]
 name = "veqtor-workspace"
-version = "0.0.20"
+version = "0.0.21"
 source = { editable = "." }
 dependencies = [
     { name = "anyio" },

@@ -53,6 +53,7 @@ is an optional, read-only Python helper for the existing `run_python` tool. Prin
 to read projected paragraphs, comments with anchors/replies and optional retained revision evidence.
 Search returns matching paragraphs before neighboring context; without a query, reading stays in document order.
 There is no helper pagination, paragraph-length cap or maximum neighborhood size.
+Paragraphs with retained revision marks show `[rN]`; `details=True` expands their history.
 Repeated warnings are grouped by paragraph address. `format="data"` returns full structured
 items for custom code; the default text is not JSON. Read the runner's stored output using
 `output_cursor` if it exceeds one reply, without reparsing the document. The text incorporates
