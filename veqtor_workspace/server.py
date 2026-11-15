@@ -16,7 +16,7 @@ from veqtor_workspace.runner import DEFAULT_CALL_SECONDS, DEFAULT_STATE, Workspa
 
 def build_server(workspace: Workspace) -> MCPServer:
     operations = Operations(workspace)
-    server = MCPServer("veqtor-workspace", version="0.0.16", instructions=(
+    server = MCPServer("veqtor-workspace", version="0.0.17", instructions=(
         "Local files and Python for model-directed document work. Start with workspace_info for the short workflow. "
         "Choose your own editing and verification method. Helpers and check_docx are optional; "
         "no clean diagnostic report is required to save. Preserve what the user did not ask to change. "
@@ -75,7 +75,8 @@ def build_server(workspace: Workspace) -> MCPServer:
         Successful saves are not undone by later errors. Snapshots stay in the server's private state.
         status(task_id=...): read the outcome without saving. Use after any interrupted
         save: a missing reply does not prove that the document was not replaced.
-        A save intent closes editing even if its final state write fails; start a fresh task.
+        Saving closes editing. To read the result, use run_python(read_paths=[file], code=...) without task_id.
+        Start a fresh task only for further edits; after an interrupted save, inspect status first.
         """
         return await operations.call("document_task", {"action": action, "file": file,
                                                        "task_id": task_id, "read_paths": read_paths})

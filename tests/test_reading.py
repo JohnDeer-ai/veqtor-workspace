@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Read evidence, not a reconstructed negotiation history or a Word layout."""
 
+import hashlib
 import json
+from collections import Counter
 
 import pytest
 from test_checks import NS, check, comments, docx, mark, math, para, rev, run
@@ -18,6 +20,40 @@ def read_all(path, **options):
         cursor = page["next_cursor"]
         if cursor is None:
             return items
+
+
+@pytest.mark.parametrize("match_in", ["text", "revision", "comment"])
+def test_search_starts_with_match_before_neighbor_history_and_keeps_all_items(tmp_path, match_in):
+    previous = para(*(rev("ins", str(i), "Earlier author", run(f"Earlier history {i}. ")) for i in range(8)),
+                    '<w:commentRangeStart w:id="0"/>', run("Neighbor"), '<w:commentRangeEnd w:id="0"/>')
+    selected = para(run("Selected clause" + (" needle" if match_in == "text" else "")),
+                    rev("del", "20", "Another author", run("needle", "delText")) if match_in == "revision" else "",
+                    '<w:commentRangeStart w:id="1"/>', run(" retained text"), '<w:commentRangeEnd w:id="1"/>')
+    parts = comments('<w:comment w:id="0" w:author="A">' + para(run("Neighbor comment")) + '</w:comment>',
+                     '<w:comment w:id="1" w:author="B">'
+                     + para(run("needle" if match_in == "comment" else "Selected comment")) + '</w:comment>')
+    path = docx(tmp_path / "search.docx", [previous, selected, para(run("Following context"))], parts)
+    first = read_docx(path, query="needle", details=True)
+    assert first["items"][0]["type"] == "paragraph"
+    assert first["items"][0]["text"].startswith("Selected clause")
+    assert first["order"] == "matches_then_context" and first["next_cursor"]
+    searched = read_all(path, query="needle", details=True)
+    sequential = read_all(path, details=True)
+    assert Counter(json.dumps(item, sort_keys=True) for item in searched) == Counter(
+        json.dumps(item, sort_keys=True) for item in sequential)
+
+
+def test_multiple_search_matches_precede_overlapping_context_and_old_cursors_are_rejected(tmp_path):
+    text = ["Before", "needle first", "Between", "needle second", "After"]
+    path = docx(tmp_path / "multiple.docx", [para(run(t)) for t in text])
+    searched = read_all(path, query="needle", limit=1)
+    assert [item["text"] for item in searched] == [text[1], text[3], text[0], text[2], text[4]]
+    assert [item["text"] for item in read_all(path, limit=1)] == text
+    assert read_docx(path)["order"] == "document"
+    old_signature = hashlib.sha256(json.dumps(
+        [hashlib.sha256(path.read_bytes()).hexdigest(), "needle", False, 1, 1]).encode()).hexdigest()[:24]
+    with pytest.raises(ValueError, match="cursor"):
+        read_docx(path, query="needle", limit=1, cursor=f"{old_signature}:1")
 
 
 def test_ten_authors_nested_edits_and_retained_history(tmp_path):

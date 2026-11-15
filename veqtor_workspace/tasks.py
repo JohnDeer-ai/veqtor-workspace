@@ -24,6 +24,11 @@ def current_digest(path: Path) -> str | None:
         return None
 
 
+def _read_hint(path: Path) -> str:
+    return (f"To read the current on-disk file, call run_python(read_paths={json.dumps([str(path)], ensure_ascii=False)}, "
+            "code=...), omitting task_id. No new task is needed for reading.")
+
+
 class SaveConflict(Exception):
     """Abort the atomic replacement when a newer on-disk version is detected."""
 
@@ -103,7 +108,9 @@ class DocumentTasks:
     def context(self, task_id: str, writing: bool = False) -> tuple[Workspace, dict]:
         data, folder = self.read(task_id)
         if writing and (data["saved"] or data.get("save_sha256")):
-            raise ValueError("Saving has started for this task. Inspect its status. Start a new task before further edits.")
+            target = Path(data.get("save_file", data["file"]))
+            raise ValueError("Saving has started for this task. Inspect document_task(action='status', task_id=...) "
+                             "for its outcome. " + _read_hint(target) + " Start a new task before further edits.")
         return self._context(folder, data.get("read_paths") if writing else None), data
 
     def status(self, task_id: str) -> dict:
@@ -118,6 +125,7 @@ class DocumentTasks:
         return {"status": status, "file": str(target), "saved": data["saved"],
                 "editing_closed": bool(data["saved"] or data.get("save_sha256")),
                 "state_recovery_pending": data.get("state_recovery_pending", False),
+                "read_hint": _read_hint(target),
                 "detail": "Read-only status. Unknown means the current file differs; do not overwrite it to resolve uncertainty."}
 
     def save(self, task_id: str, file: str | None = None) -> dict:
@@ -130,6 +138,7 @@ class DocumentTasks:
         if data["saved"]:
             return {"status": "already_saved", "file": str(target),
                     "current_file_matches_saved": current_hash == data["saved_sha256"],
+                    "read_hint": _read_hint(target),
                     "state_recovery_pending": data.get("state_recovery_pending", False)}
         candidate = (folder / data["candidate"]).resolve(strict=True)
         if not candidate.is_relative_to(folder / "work") or not candidate.is_file():
@@ -170,6 +179,7 @@ class DocumentTasks:
         except OSError:
             pending = True  # The document IS saved; never turn this into a generic failure.
         return {"status": "saved", "file": str(target), "sha256": candidate_hash,
+                "read_hint": _read_hint(target),
                 "state_recovery_pending": pending,
                 "snapshot": str(folder / data["original"]),
                 "detail": ("Created a new file; the source was not replaced." if new_file else "Replaced the file.")

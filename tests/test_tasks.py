@@ -212,9 +212,12 @@ def test_saved_legacy_task_cannot_be_redirected(project):
         tasks.save(task["task_id"], str(source.with_name("not-created.txt")))
 
 
-def test_project_workflow_over_mcp(project):
+@pytest.mark.parametrize("save_as", [False, True])
+def test_project_workflow_over_mcp(project, save_as):
     workspace, _ = project
     source = docx(workspace.project / "Contract.docx", [para(run("Pay within 30 days"))])
+    source_hash = digest(source)
+    target = source.with_name('Итог "проверка".docx') if save_as else source
 
     async def exercise():
         params = StdioServerParameters(command=sys.executable,
@@ -253,7 +256,21 @@ print("edited")
             assert result["stdout"] == "edited\n", result
             check = await call("check_docx", {"task_id": task["task_id"]})
             assert not check["summary"]["observations"], check
-            saved = await call("document_task", {"action": "save", "task_id": task["task_id"]})
+            saved = await call("document_task", {"action": "save", "task_id": task["task_id"],
+                                                 **({"file": str(target)} if save_as else {})})
             assert saved["status"] == "saved"
-            assert digest(source) == saved["sha256"]
+            assert digest(target) == saved["sha256"]
+            if save_as:
+                assert digest(source) == source_hash
+            reads, _ = json.JSONDecoder().raw_decode(saved["read_hint"].split("read_paths=", 1)[1])
+            assert reads == [str(target)]
+            assert "omitting task_id" in saved["read_hint"]
+            read_code = f"import hashlib; from pathlib import Path; print(hashlib.sha256(Path({str(target)!r}).read_bytes()).hexdigest())"
+            closed = await client.call_tool("run_python", {"task_id": task["task_id"], "code": read_code})
+            assert closed.is_error and saved["read_hint"] in closed.content[0].text
+            for action in ("status", "save"):
+                receipt = await call("document_task", {"action": action, "task_id": task["task_id"]})
+                assert receipt["read_hint"] == saved["read_hint"]
+            reread = await call("run_python", {"read_paths": reads, "code": read_code})
+            assert reread["exit_code"] == 0 and reread["stdout"].strip() == saved["sha256"]
     asyncio.run(exercise())

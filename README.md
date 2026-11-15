@@ -29,6 +29,8 @@ the selected file at `document_task(save)`. Add `file="/absolute/path/new-name.d
 to save under a new name in an existing folder. This creates a new file without replacing
 the source; an existing destination is never overwritten. The new output is based on the
 task snapshot, even if the source was subsequently changed or moved.
+Save replies include a `read_hint`: read the resulting path with `run_python(read_paths=[...], code=...)`
+without `task_id`. No new editing task is needed just to inspect the saved file.
 No manual copying into inputs/ is needed.
 Optional `read_paths` on start selects supporting files/folders. `run_python(read_paths=[...])`
 can read selected material without creating an editing task; additional grants last only
@@ -47,6 +49,7 @@ not injected into every initial reply.
 `veqtor_workspace.reading.read_docx(path, query=None, details=False, context=1, limit=6, cursor=None)`
 is an optional, read-only Python helper for the existing `run_python` tool. It pages
 through projected text, comments with anchors/replies and retained revision evidence.
+Search returns matching paragraphs before neighboring context; without a query, reading stays in document order.
 Follow `next_cursor` with identical options; file changes invalidate the cursor. Long
 passages continue in chunks, within the runner's reply size. The text incorporates
 pending edits for reading only; it is not legal approval or reconstruction of missing

@@ -239,6 +239,7 @@ def read_docx(path, query=None, *, details=False, context=1, limit=6, cursor=Non
     """Read selected passages, their comments and optionally retained revision evidence.
 
     print(json.dumps(read_docx(path, query='8.8', details=True), ensure_ascii=False)).
+    Search returns matching paragraphs before neighboring context; query=None uses document order.
     Repeat with the returned next_cursor and identical options until it is None.
     The cursor is bound to file bytes and options. Output stays below runner stdout's
     normal 12 KB reply; long text is continued, never silently cut. No edits/acceptance.
@@ -254,7 +255,8 @@ def read_docx(path, query=None, *, details=False, context=1, limit=6, cursor=Non
         raise ValueError("Document changed while reading; read the saved version again.")
     records = paragraphs(roots)
     comments = _comments(roots, records)
-    signature = hashlib.sha256(json.dumps([before_hash, query, details, context, limit]).encode()).hexdigest()[:24]
+    signature = hashlib.sha256(json.dumps(
+        ["matches_first_v1", before_hash, query, details, context, limit]).encode()).hexdigest()[:24]
     offset = 0
     if cursor is not None:
         stamp, sep, value = str(cursor).partition(":")
@@ -267,6 +269,9 @@ def read_docx(path, query=None, *, details=False, context=1, limit=6, cursor=Non
         [r["text"], *(x["text"] for x in r["revisions"]), *(c["text"] for c in related[r["id"]])]))]
     selected = sorted({j for i in hits for j in range(max(0, i - context), min(len(records), i + context + 1))
                        if records[j]["location"]["part"] == records[i]["location"]["part"]})
+    if query_key is not None:
+        hit_set = set(hits)
+        selected = hits + [i for i in selected if i not in hit_set]
     items, used_comments = [], set()
     for i in selected:
         r = records[i]
@@ -283,6 +288,7 @@ def read_docx(path, query=None, *, details=False, context=1, limit=6, cursor=Non
         if comment["anchor_status"] == "not_located" and (query_key is None or query_key in normalized(comment["text"])):
             items.extend(_chunks(comment))
     result = {"sha256": before_hash, "view": "text_with_pending_changes_incorporated_not_approval",
+              "order": "matches_then_context" if query_key is not None else "document",
               "scope": "Body, tables, headers/footers, footnotes/endnotes and located comments. Retained markup only; "
                        "accepted/deleted history cannot be reconstructed. Numbering, fields, drawings and final layout are not evaluated.",
               "paragraphs": len(records), "matched_paragraphs": len(hits), "comments": len(comments),

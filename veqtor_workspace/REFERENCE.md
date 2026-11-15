@@ -10,6 +10,7 @@ not a required sequence or a closed set of editing operations.
 retained revisions, comments/replies and table-cell context. Follow `next_cursor` with
 identical options until None; long passages continue in chunks. A changed file invalidates
 the cursor. Use query=None to read sequentially. Search includes deleted text and comments.
+Matching paragraphs come before neighboring context; both remain available through continuation.
 Projected current text incorporates pending edits for reading; it does not accept them in
 the file or reconstruct rounds whose markup has been removed. Inspect reported coverage
 limits with custom code or Word when relevant.
@@ -108,6 +109,8 @@ document contents. A completed replacement is not rolled back by a later script 
 Without `file` it replaces the source only when it still matches the snapshot.
 With a new `file` path it creates an output without replacing the source or any existing file.
 The destination folder must already exist. A saved task is closed; start a new task for later edits.
+To read the current saved file, use `run_python(read_paths=[saved_path], code=...)` without `task_id`.
+Save/status replies include this `read_hint` with the exact destination; reading needs no new task.
 After any interrupted save, `document_task(status)` reports the recorded destination:
 `saved`, `not_saved`, `saved_then_changed` or `outcome_unknown`.
 A save intent closes editing even if the final status write fails. Use status before retrying;
