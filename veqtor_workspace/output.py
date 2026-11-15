@@ -47,13 +47,18 @@ class OutputCursors:
 def read_stream(path: Path, offset: int = 0, total_bytes: int | None = None) -> dict:
     try:
         with path.open("rb") as stream:
-            size = os.fstat(stream.fileno()).st_size
-            if total_bytes is not None and size != total_bytes:
-                raise ValueError("Stored output changed; this cursor cannot continue it.")
+            available = os.fstat(stream.fileno()).st_size
+            # A cursor addresses the captured prefix, never later appended bytes.
+            size = available if total_bytes is None else total_bytes
+            if available < size:
+                raise ValueError("Stored output was shortened; this cursor cannot continue it.")
             if not 0 <= offset <= size:
                 raise ValueError("Output offset is outside the stored result.")
             stream.seek(offset)
-            raw = stream.read(MAX_REPLY)
+            count = min(MAX_REPLY, size - offset)
+            raw = stream.read(count)
+            if len(raw) != count:
+                raise ValueError("Stored output changed while reading; this cursor cannot continue it.")
     except FileNotFoundError:
         raise ValueError("Stored output is no longer available. Read the source or a saved scratch extract again.") from None
     decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
@@ -61,6 +66,19 @@ def read_stream(path: Path, offset: int = 0, total_bytes: int | None = None) -> 
     next_offset = offset + len(raw) - len(decoder.getstate()[0])
     return {"text": text, "offset_bytes": offset, "total_bytes": size,
             "remaining_bytes": size - next_offset, "_next_offset": next_offset}
+
+
+def collect_output(root: Path, run_id: str) -> dict:
+    result = {"_output_pages": {}}
+    for kind in ("stdout", "stderr"):
+        path = root / ".runs" / f"{run_id}.{kind}"
+        page = read_stream(path)
+        result[kind] = page["text"]
+        result[f"{kind}_truncated"] = page["remaining_bytes"] > 0
+        result[f"{kind}_path"] = str(path.relative_to(root))
+        if page["remaining_bytes"]:
+            result["_output_pages"][kind] = {"offset": page["_next_offset"], "total_bytes": page["total_bytes"]}
+    return result
 
 
 def read_output(root: Path, data: dict) -> dict:

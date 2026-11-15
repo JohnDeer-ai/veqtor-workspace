@@ -126,6 +126,7 @@ placement of indistinguishable copies can be ambiguous.
   `stdout_next_cursor` and/or `stderr_next_cursor`, remaining byte counts and `output_hint`.
   Call `run_python(output_cursor=...)` alone to read the stored output; follow `next_cursor` until null.
   No Python code runs again. UTF-8 characters stay intact across page boundaries, and retrying a cursor is idempotent.
+  The supervisor stops the call's process group before capturing pages; continuation stays within that captured byte prefix.
   Cursors are signed for this server connection and expire at restart; they can also read a completed task's output.
   This grants no general access to private logs. DOCX reading separately supports its document-bound `next_cursor`.
 - Each Python call receives `VEQTOR_UTC_NOW`, an actual UTC timestamp, alongside

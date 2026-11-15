@@ -14,7 +14,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from veqtor_workspace.output import MAX_REPLY, read_stream
+from veqtor_workspace.output import MAX_REPLY, collect_output
 from veqtor_workspace.preview import renderer_info
 
 DEFAULT_CALL_SECONDS = 270
@@ -94,7 +94,7 @@ class Workspace:
 
     def info(self) -> dict:
         return {
-            "prototype": "0.0.18", "author": self.author,
+            "prototype": "0.0.19", "author": self.author,
             "access_mode": "paths" if self.dynamic else "legacy_folder",
             "read_paths": [str(p) for p in self.read_paths],
             "project_folder": str(self.project) if self.project else None,
@@ -206,15 +206,9 @@ class Workspace:
                 process.wait()
         result = {"run_id": run_id, "exit_code": process.returncode, "timed_out": timed_out,
                   "artifacts": self.outputs(), "verification": "not_run", "scratch_dir": str(self.root / "work")}
-        for kind in ("stdout", "stderr"):
-            path = stem.with_suffix(f".{kind}")
-            page = read_stream(path)
-            result[kind] = page["text"]
-            result[f"{kind}_truncated"] = page["remaining_bytes"] > 0
-            result[f"{kind}_path"] = str(path.relative_to(self.root))
-            if page["remaining_bytes"]:
-                result.setdefault("_output_pages", {})[kind] = {
-                    "offset": page["_next_offset"], "total_bytes": page["total_bytes"]}
+        # Preserve the direct-runner/older-supervisor response. The MCP supervisor
+        # refreshes these bounded pages after stopping the entire process group.
+        result.update(collect_output(self.root, run_id))
         if result["stdout_truncated"] or result["stderr_truncated"]:
             recovery = (
                 "Full logs are private in calls without task_id; read only the needed source range in the next call. "

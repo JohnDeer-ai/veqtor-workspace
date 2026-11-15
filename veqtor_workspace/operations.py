@@ -15,10 +15,24 @@ import anyio
 
 from veqtor_workspace.checks import check_docx
 from veqtor_workspace.files import atomic_save
-from veqtor_workspace.output import OutputCursors, read_output
+from veqtor_workspace.output import OutputCursors, collect_output, read_output
 from veqtor_workspace.preview import read_preview, render_pair, select_pages
 from veqtor_workspace.runner import Workspace
 from veqtor_workspace.tasks import DocumentTasks
+
+
+async def _stop_worker(process):
+    with anyio.CancelScope(shield=True):
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.stdin.close()
+        # Drain before wait: cancellation may have stopped the original readers
+        # with a full pipe. Cleanup has its own bounded shield.
+        with anyio.move_on_after(2):
+            await asyncio.gather(process.stdout.read(), process.stderr.read())
+            await process.wait()
 
 
 class Operations:
@@ -65,6 +79,13 @@ class Operations:
                 raise ValueError(reply["error"])
             result = reply["result"]
             if operation == "run_python":
+                # Descendants can still append after the main Python script exits.
+                # Stop the whole call before issuing cursors for its final output.
+                await _stop_worker(process)
+                process = None
+                root = w.root / ".runs/documents" / arguments["task_id"] if arguments.get("task_id") else w.root
+                result.pop("output_hint", None)
+                result.update(collect_output(root, result["run_id"]))
                 for stream, page in result.pop("_output_pages", {}).items():
                     result[f"{stream}_next_cursor"] = self.output_cursors.encode({
                         "run_id": result["run_id"], "task_id": arguments.get("task_id"), "stream": stream, **page})
@@ -84,19 +105,8 @@ class Operations:
                               "For an interrupted save, call document_task(action='status') before deciding its outcome."}
         finally:
             try:
-                with anyio.CancelScope(shield=True):
-                    if process is not None:
-                        try:
-                            os.killpg(process.pid, signal.SIGKILL)
-                        except ProcessLookupError:
-                            pass
-                        process.stdin.close()
-                        # Cancellation has stopped the original readers. Drain the pipes
-                        # before wait(), otherwise a full StreamReader can keep wait stuck
-                        # even after SIGKILL. Cleanup has its own bounded shield.
-                        with anyio.move_on_after(2):
-                            await asyncio.gather(process.stdout.read(), process.stderr.read())
-                            await process.wait()
+                if process is not None:
+                    await _stop_worker(process)
             finally:
                 w.lock.release()
 
@@ -158,7 +168,7 @@ def perform(w: Workspace, operation: str, args: dict) -> dict:
         try:
             cached = json.loads(receipt.read_text())
             result = cached["report"]
-            reused_check = (cached["version"] == "0.0.18" and cached["author"] == w.author
+            reused_check = (cached["version"] == "0.0.19" and cached["author"] == w.author
                             and cached["changes_start"] == changes_start
                             and result["original_sha256"] == preview["files"]["original"]["sha256"]
                             and result["candidate_sha256"] == preview["files"]["candidate"]["sha256"])
@@ -175,7 +185,7 @@ def perform(w: Workspace, operation: str, args: dict) -> dict:
                 and result.get("original_sha256") == preview["files"]["original"]["sha256"]
                 and result.get("candidate_sha256") == preview["files"]["candidate"]["sha256"]):
             with atomic_save(Path(preview["directory"]) / "check.json") as temporary:
-                temporary.write_text(json.dumps({"version": "0.0.18", "author": w.author,
+                temporary.write_text(json.dumps({"version": "0.0.19", "author": w.author,
                                                  "changes_start": changes_start, "report": result}))
         if reused_check:
             result = {key: result[key] for key in ("status", "summary", "original_sha256", "candidate_sha256",

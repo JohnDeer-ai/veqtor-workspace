@@ -37,6 +37,105 @@ def test_output_pages_keep_unicode_boundaries_and_byte_counts(tmp_path, raw):
     assert "".join(texts) == raw.decode("utf-8", errors="replace")
 
 
+def test_output_cursor_keeps_captured_prefix_when_log_grows(tmp_path):
+    path = tmp_path / "output"
+    original = "a" * 11999 + "🙂текст" * 2000
+    path.write_text(original)
+    first = read_stream(path)
+    with path.open("a") as stream:
+        stream.write("later output" * 1000)
+    text, page = first["text"], first
+    while page["remaining_bytes"]:
+        page = read_stream(path, page["_next_offset"], first["total_bytes"])
+        text += page["text"]
+        assert page["total_bytes"] == len(original.encode())
+    assert text == original
+
+
+def test_initial_output_page_never_reads_beyond_captured_size(tmp_path, monkeypatch):
+    path = tmp_path / "output"
+    path.write_bytes(b"initial")
+    fstat = os.fstat
+
+    def append_after_stat(fd):
+        info = fstat(fd)
+        with path.open("ab") as stream:
+            stream.write(b"later output")
+        return info
+
+    monkeypatch.setattr(os, "fstat", append_after_stat)
+    page = read_stream(path)
+    assert page["text"] == "initial" and page["remaining_bytes"] == 0
+    assert page["_next_offset"] == page["total_bytes"] == 7
+
+
+@pytest.mark.parametrize("initial_bytes", [0, 24000])
+def test_child_output_after_main_exit_is_captured_before_cursors(tmp_path, monkeypatch, initial_bytes):
+    w = Workspace(tmp_path / "state", Path(os.environ.get("VEQTOR_TEST_PYTHON", sys.executable)), "Test", dynamic=True)
+    late_stdout, late_stderr = "late stdout🙂" * 1600, "late stderrЯ" * 1600
+    child = f'''
+import os,time
+from pathlib import Path
+os.write(1,b'x'*{initial_bytes}); os.write(2,b'e'*{initial_bytes})
+Path('work/ready').touch()
+while not Path('work/continue').exists(): time.sleep(.002)
+os.write(1,{late_stdout.encode()!r}); os.write(2,{late_stderr.encode()!r})
+Path('work/finished').touch()
+while True: time.sleep(1)
+'''
+    code = f'''
+import subprocess,sys,time
+from pathlib import Path
+count=Path('work/count')
+count.write_text((count.read_text() if count.exists() else '')+'1')
+subprocess.Popen([sys.executable,'-u','-c',{child!r}])
+while not Path('work/ready').exists(): time.sleep(.002)
+'''
+    # Force the child to append after the runner builds its initial reply, before
+    # the supervisor stops the group. This reproduces the race without relying on timing.
+    prelude = '''
+import time
+from veqtor_workspace.runner import Workspace
+original = Workspace._run
+def append_before_worker_reply(self, *args):
+    result = original(self, *args)
+    (self.root / 'work/continue').touch()
+    deadline = time.monotonic() + 5
+    while not (self.root / 'work/finished').exists():
+        if time.monotonic() > deadline: raise RuntimeError('Test child did not finish output')
+        time.sleep(.002)
+    return result
+Workspace._run = append_before_worker_reply
+from veqtor_workspace.operations import main
+main()
+'''
+    spawn = asyncio.create_subprocess_exec
+
+    async def injected(*command, **kwargs):
+        assert command[-2:] == ("-m", "veqtor_workspace.operations")
+        return await spawn(sys.executable, "-c", prelude, **kwargs)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", injected)
+
+    async def exercise():
+        operations = Operations(w)
+        result = await operations.call("run_python", {"code": code})
+        assert result["exit_code"] == 0
+        for kind, expected in (("stdout", "x" * initial_bytes + late_stdout),
+                               ("stderr", "e" * initial_bytes + late_stderr)):
+            assert result[f"{kind}_truncated"]
+            assert result[f"{kind}_remaining_bytes"] == len(expected.encode()) - len(result[kind].encode())
+            text, cursor = result[kind], result[f"{kind}_next_cursor"]
+            while cursor:
+                page = await operations.call("run_python", {"output_cursor": cursor})
+                text += page["text"]
+                assert page["remaining_bytes"] == len(expected.encode()) - len(text.encode())
+                cursor = page["next_cursor"]
+            assert text == expected
+        assert (w.root / "work/count").read_text() == "1"
+    asyncio.run(exercise())
+
+
 @pytest.mark.parametrize("task_mode", [False, True])
 def test_mcp_continuation_both_streams_scratch_and_saved_task(tmp_path, task_mode):
     root = tmp_path / "private state"

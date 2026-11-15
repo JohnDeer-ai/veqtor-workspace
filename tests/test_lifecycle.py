@@ -304,7 +304,7 @@ def test_cancel_large_reply_frees_connection(project, monkeypatch, stream):
                     await asyncio.gather(children[0].stdout.read(), children[0].stderr.read())
                 await request
         response = await Operations(w).call("workspace_info", {})
-        assert response["prototype"] == "0.0.18"
+        assert response["prototype"] == "0.0.19"
     asyncio.run(exercise())
 
 
