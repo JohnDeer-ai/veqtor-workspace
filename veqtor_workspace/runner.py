@@ -95,7 +95,7 @@ class Workspace:
 
     def info(self) -> dict:
         return {
-            "prototype": "0.0.21", "author": self.author,
+            "prototype": "0.0.22", "author": self.author,
             "access_mode": "paths" if self.dynamic else "legacy_folder",
             "read_paths": [str(p) for p in self.read_paths],
             "project_folder": str(self.project) if self.project else None,
@@ -114,7 +114,7 @@ class Workspace:
                        "max_timeout_seconds": self.call_timeout_seconds,
                        "scope": "Whole MCP call, including setup, checks and saving; no disabled deadline or queue.",
                        "bytes_per_written_file": None, "max_reply_bytes": self.max_reply_bytes,
-                       "reply_scope": "One shared UTF-8 text budget for stdout and stderr; reply_bytes may request less."},
+                       "reply_scope": "One shared UTF-8 budget for stdout, stderr and artifact names; reply_bytes may request less."},
             "preview": {**renderer_info(self.preview_config), "config": str(self.preview_config),
                         "usage": "check_docx(render=True); reuse preview_id with preview_pages for more pages",
                         "default_timeout_seconds": min(60, self.call_timeout_seconds),
@@ -217,12 +217,16 @@ class Workspace:
                 except ProcessLookupError:
                     pass
                 process.wait()
+        artifacts = [name for name, stamp in self.output_stamps().items() if before.get(name) != stamp]
+        with stem.with_suffix(".artifacts").open("w", encoding="utf-8") as manifest:
+            manifest.write(f"{len(artifacts)}\n")
+            for name in artifacts:
+                manifest.write(json.dumps(name, ensure_ascii=False) + "\n")
         result = {"run_id": run_id, "exit_code": process.returncode, "timed_out": timed_out,
-                  "artifacts": [name for name, stamp in self.output_stamps().items() if before.get(name) != stamp],
                   "scratch_dir": str(self.root / "work"), "reply_bytes": reply_bytes}
         # Preserve the direct-runner/older-supervisor response. The MCP supervisor
         # refreshes these bounded pages after stopping the entire process group.
         result.update(collect_output(self.root, run_id, reply_bytes))
-        if result["stdout_truncated"] or result["stderr_truncated"]:
+        if result["_output_pages"]:
             result["output_hint"] = "Output is incomplete; the MCP supervisor supplies continuation cursors. Do not rerun editing code."
         return result

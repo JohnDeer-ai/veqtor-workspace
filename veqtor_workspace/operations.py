@@ -94,9 +94,10 @@ class Operations:
                     result[f"{stream}_next_cursor"] = self.output_cursors.encode({
                         "run_id": result["run_id"], "task_id": arguments.get("task_id"), "stream": stream, **page})
                     result[f"{stream}_remaining_bytes"] = page["total_bytes"] - page["offset"]
-                if result.get("stdout_truncated") or result.get("stderr_truncated"):
+                if any(result.get(f"{stream}_truncated") for stream in ("stdout", "stderr", "artifacts")):
                     result["output_hint"] = (
-                        "Output is incomplete. Call run_python(output_cursor=stdout_next_cursor) or use stderr_next_cursor, "
+                        "Output is incomplete. Use stdout_next_cursor, stderr_next_cursor or artifacts_next_cursor "
+                        "as run_python(output_cursor=...), "
                         "without code, task_id or read_paths. Then follow next_cursor until null. "
                         "This reads stored output only; never repeat editing code to recover it. Cursors last for this connection.")
             elif operation == "read_output":
@@ -173,7 +174,7 @@ def perform(w: Workspace, operation: str, args: dict) -> dict:
         try:
             cached = json.loads(receipt.read_text())
             result = cached["report"]
-            reused_check = (cached["version"] == "0.0.21" and cached["author"] == w.author
+            reused_check = (cached["version"] == "0.0.22" and cached["author"] == w.author
                             and cached["changes_start"] == changes_start
                             and result["original_sha256"] == preview["files"]["original"]["sha256"]
                             and result["candidate_sha256"] == preview["files"]["candidate"]["sha256"])
@@ -190,7 +191,7 @@ def perform(w: Workspace, operation: str, args: dict) -> dict:
                 and result.get("original_sha256") == preview["files"]["original"]["sha256"]
                 and result.get("candidate_sha256") == preview["files"]["candidate"]["sha256"]):
             with atomic_save(Path(preview["directory"]) / "check.json") as temporary:
-                temporary.write_text(json.dumps({"version": "0.0.21", "author": w.author,
+                temporary.write_text(json.dumps({"version": "0.0.22", "author": w.author,
                                                  "changes_start": changes_start, "report": result}))
         if reused_check:
             result = {key: result[key] for key in ("status", "summary", "original_sha256", "candidate_sha256",

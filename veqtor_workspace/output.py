@@ -12,6 +12,7 @@ import struct
 from pathlib import Path
 
 MAX_REPLY = 24_000
+STREAMS = ("stdout", "stderr", "artifacts")
 
 
 def reply_limit(requested: int | None, ceiling: int = MAX_REPLY) -> int:
@@ -32,7 +33,7 @@ class OutputCursors:
         self.key = secrets.token_bytes(32)
 
     def encode(self, data: dict) -> str:
-        flags = 16 | bool(data["task_id"]) | (2 if data["stream"] == "stderr" else 0)
+        flags = 16 | bool(data["task_id"]) | (STREAMS.index(data["stream"]) << 1)
         payload = _b64(struct.pack(">B6s6sQQ", flags, bytes.fromhex(data["run_id"]),
                                   bytes.fromhex(data["task_id"] or "0" * 12), data["offset"], data["total_bytes"]))
         return payload + "." + _b64(hmac.new(self.key, payload.encode(), hashlib.sha256).digest()[:16])
@@ -46,10 +47,10 @@ class OutputCursors:
             if not hmac.compare_digest(signature, expected):
                 raise ValueError
             flags, run, task, offset, size = struct.unpack(">B6s6sQQ", base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
-            if flags not in range(16, 20) or offset > size:
+            if flags not in range(16, 16 + 2 * len(STREAMS)) or offset > size:
                 raise ValueError
             return {"run_id": run.hex(), "task_id": task.hex() if flags & 1 else None,
-                    "stream": "stderr" if flags & 2 else "stdout", "offset": offset, "total_bytes": size}
+                    "stream": STREAMS[(flags & 6) >> 1], "offset": offset, "total_bytes": size}
         except (ValueError, TypeError, KeyError, struct.error):
             raise ValueError("Invalid output cursor or different server connection. Use a cursor returned by this connection; "
                              "do not repeat editing code to recover output.") from None
@@ -85,8 +86,32 @@ def read_stream(path: Path, offset: int = 0, total_bytes: int | None = None, rep
             "remaining_bytes": size - next_offset, "_next_offset": next_offset}
 
 
+def _artifact_page(path: Path, budget: int) -> tuple[dict, int]:
+    """Preview complete names; the immutable manifest continues through the same output cursor."""
+    names, used = [], 1  # JSON array brackets/commas cost one more byte than JSONL names.
+    with path.open("rb") as stream:
+        total = os.fstat(stream.fileno()).st_size
+        count = int(stream.readline())
+        offset = stream.tell()
+        for _ in range(count):
+            line = stream.readline(budget - used + 1)
+            if not line.endswith(b"\n") or used + len(line) > budget:
+                break
+            names.append(json.loads(line))
+            used += len(line)
+            offset = stream.tell()
+    return {"artifacts": names, "artifacts_count": count,
+            "artifacts_remaining": count - len(names), "artifacts_truncated": len(names) < count,
+            "_output_pages": {"artifacts": {"offset": offset, "total_bytes": total}} if offset < total else {}}, used if names else 0
+
+
 def collect_output(root: Path, run_id: str, reply_bytes: int = MAX_REPLY) -> dict:
     result = {"_output_pages": {}}
+    manifest = root / ".runs" / f"{run_id}.artifacts"
+    if manifest.exists():
+        # Names share the response budget without crowding out Python's text/errors.
+        result, reserved = _artifact_page(manifest, reply_bytes // 4)
+        reply_bytes -= reserved
     sizes = {kind: (root / ".runs" / f"{run_id}.{kind}").stat().st_size for kind in ("stdout", "stderr")}
     # Share one budget. Errors stay visible even when stdout is very large.
     error_path = root / ".runs" / f"{run_id}.stderr"
@@ -121,9 +146,12 @@ def output_text(result: dict) -> str:
     """Human-readable MCP text, with intact raw streams in structuredContent."""
     if "run_id" not in result:
         return json.dumps(result, ensure_ascii=False)
-    keys = ("run_id", "exit_code", "timed_out", "scratch_dir", "artifacts", "reply_bytes",
+    keys = ("run_id", "exit_code", "timed_out", "scratch_dir", "artifacts", "artifacts_count", "artifacts_remaining", "reply_bytes",
             "stream", "offset_bytes", "total_bytes", "remaining_bytes")
     lines = [json.dumps({k: result[k] for k in keys if k in result}, ensure_ascii=False, separators=(",", ":"))]
+    if cursor := result.get("artifacts_next_cursor"):
+        lines.append(f"[OUTPUT CONTINUES: {result['artifacts_remaining']} more artifact names. "
+                     f'Call run_python(output_cursor="{cursor}") for JSONL filenames. Code is not rerun.]')
     streams = [(result["stream"], "text", "next_cursor", "remaining_bytes")] if "stream" in result else [
         (s, s, f"{s}_next_cursor", f"{s}_remaining_bytes") for s in ("stdout", "stderr")]
     for stream, field, cursor_key, remaining in streams:

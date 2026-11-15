@@ -31,11 +31,14 @@ Text PDFs can be read with the bundled `pypdf`. Image-only scans need OCR, which
 For intermediate extracts, write `Path('work/extract.txt')` or use Python `tempfile`.
 `scratch_dir` gives the exact writable folder, including in reading-only calls; the cwd root and `/tmp` are not writable.
 Files in `work/` persist between calls in that context; an editing task has its own `work/`.
-If Python output is truncated, call `run_python(output_cursor=stdout_next_cursor)` or use `stderr_next_cursor`,
+If Python output or artifact names are truncated, call `run_python(output_cursor=...)` using
+`stdout_next_cursor`, `stderr_next_cursor` or `artifacts_next_cursor`,
 without code, task_id or read_paths. Each page returns stored `text`, byte counts and `next_cursor` (null at the end).
 Reusing a cursor rereads the same page; it never executes code. Cursors expire when the server connection restarts.
 This also works after a task is saved. Other private logs remain inaccessible.
-reply_bytes selects a page within the server ceiling (normally 24,000 UTF-8 bytes shared by stdout/stderr).
+reply_bytes selects a page within the server ceiling (normally 24,000 UTF-8 bytes shared by stdout/stderr/artifact names).
+Artifact continuations are JSONL filenames; join the returned text before decoding complete lines.
+The initial artifacts list is a prefix, with artifacts_count and artifacts_remaining showing its completeness.
 Oversized requests are capped, not rejected. Human-readable replies mark continuation next to the output;
 structuredContent keeps raw stdout/stderr and continuation text unchanged for programmatic use.
 

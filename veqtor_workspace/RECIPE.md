@@ -8,7 +8,7 @@ There is no fixed catalog of document operations. Helpers and diagnostics are op
    Optional DOCX reader: `from veqtor_workspace.reading import read_docx`;
    `print(read_docx(path, query="phrase"))`. Omit query for the whole file; details=True adds retained history.
    Intermediate extracts go in `work/` (`scratch_dir` in replies) or Python `tempfile`; no editing task is needed.
-   If Python output is truncated, call `run_python(output_cursor=stdout_next_cursor)` (or `stderr_next_cursor`) alone;
+   Continue truncated text/file lists with `run_python(output_cursor=...)`, using stdout_next_cursor, stderr_next_cursor or artifacts_next_cursor;
    follow `next_cursor` until null. This only reads stored output and never reruns code.
    reply_bytes may request smaller pages; larger requests are capped by the server (normally 24 KB).
 2. For each new editing task, call `document_task(action="start", file=...)` once.

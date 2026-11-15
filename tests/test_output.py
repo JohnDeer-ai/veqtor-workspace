@@ -295,6 +295,72 @@ def test_artifacts_are_current_changes_even_with_more_than_100_existing_files(tm
     assert result['artifacts'] == expected
 
 
+@pytest.mark.parametrize('task_mode', [False, True])
+def test_large_artifact_list_is_bounded_and_continues_without_reexecuting(tmp_path, task_mode):
+    w = Workspace(tmp_path / 'state', Path(os.environ.get('VEQTOR_TEST_PYTHON', sys.executable)), 'Test', dynamic=True)
+    source = tmp_path / 'source.txt'
+    source.write_text('original')
+    expected = sorted([f'work/{i:03}-' + 'условие' * 12 + '.txt' for i in range(180)]
+                      + ['work/zzz-quote"-newline\n.txt'])
+
+    async def exercise():
+        operations = Operations(w)
+        task = await operations.call('document_task', {'action': 'start', 'file': str(source)}) if task_mode else None
+        options = {'task_id': task['task_id']} if task else {}
+        result = await operations.call('run_python', {**options, 'code':
+            f"from pathlib import Path\nPath('work/.once').write_text('once')\n"
+            f"for name in {expected!r}: Path(name).write_text('result')\nprint('x'*{MAX_REPLY}, end='')"})
+        assert result['exit_code'] == 0, result['stderr']
+        # The response must not grow with all file names, even with large stdout too.
+        assert len(output_text(result).encode()) < MAX_REPLY + 2000
+        assert len(json.dumps(result['artifacts'], ensure_ascii=False, separators=(',', ':')).encode()) \
+            + len(result['stdout'].encode()) + len(result['stderr'].encode()) <= MAX_REPLY
+        assert result['artifacts_count'] == len(expected)
+        assert result['artifacts'] == expected[:len(result['artifacts'])]
+        assert 0 < len(result['artifacts']) < len(expected)
+        assert result['artifacts_remaining'] == len(expected) - len(result['artifacts'])
+        assert result['artifacts_next_cursor'] in output_text(result)
+        if task:
+            await operations.call('document_task', {'action': 'save', 'task_id': task['task_id']})
+        await operations.call('run_python', {'code': "from pathlib import Path; Path('work/later.txt').touch()"})
+        cursor, remaining = result['artifacts_next_cursor'], ''
+        first = await operations.call('run_python', {'output_cursor': cursor, 'reply_bytes': 4096})
+        assert first == await operations.call('run_python', {'output_cursor': cursor, 'reply_bytes': 4096})
+        while cursor:
+            page = await operations.call('run_python', {'output_cursor': cursor, 'reply_bytes': 4096})
+            assert page['stream'] == 'artifacts' and len(page['text'].encode()) <= 4096
+            remaining += page['text']
+            cursor = page['next_cursor']
+        assert result['artifacts'] + [json.loads(line) for line in remaining.splitlines()] == expected
+        cursor, stdout = result['stdout_next_cursor'], result['stdout']
+        while cursor:
+            page = await operations.call('run_python', {'output_cursor': cursor})
+            stdout += page['text']
+            cursor = page['next_cursor']
+        assert stdout == 'x' * MAX_REPLY
+        context = w.root / '.runs/documents' / task['task_id'] if task else w.root
+        assert (context / 'work/.once').read_text() == 'once'
+        assert source.read_text() == 'original'
+    asyncio.run(exercise())
+
+
+def test_long_artifact_name_remains_readable_with_a_small_reply_budget(tmp_path):
+    w = Workspace(tmp_path / 'state', Path(os.environ.get('VEQTOR_TEST_PYTHON', sys.executable)), 'Test', dynamic=True,
+                  max_reply_bytes=1024)
+    name = 'work/' + 'folder' * 24 + '/' + 'document' * 24 + '.txt'
+
+    async def exercise():
+        operations = Operations(w)
+        result = await operations.call('run_python', {'code':
+            f"from pathlib import Path\np=Path({name!r}); p.parent.mkdir(); p.write_text('result'); print('done')"})
+        assert result['exit_code'] == 0 and result['stdout'] == 'done\n'
+        assert result['artifacts'] == [] and result['artifacts_count'] == result['artifacts_remaining'] == 1
+        assert result['artifacts_truncated']
+        page = await operations.call('run_python', {'output_cursor': result['artifacts_next_cursor']})
+        assert json.loads(page['text']) == name and page['next_cursor'] is None
+    asyncio.run(exercise())
+
+
 @pytest.mark.parametrize("failure", ["missing", "changed"])
 def test_missing_or_changed_output_does_not_rerun_code(tmp_path, failure):
     w = Workspace(tmp_path / "state", Path(os.environ.get("VEQTOR_TEST_PYTHON", sys.executable)), "Test", dynamic=True)

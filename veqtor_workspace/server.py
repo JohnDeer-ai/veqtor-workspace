@@ -17,7 +17,7 @@ from veqtor_workspace.runner import DEFAULT_CALL_SECONDS, DEFAULT_STATE, Workspa
 
 def build_server(workspace: Workspace) -> MCPServer:
     operations = Operations(workspace)
-    server = MCPServer("veqtor-workspace", version="0.0.21", instructions=(
+    server = MCPServer("veqtor-workspace", version="0.0.22", instructions=(
         "Local files and Python for model-directed document work. Start with workspace_info for the short workflow. "
         "Choose your own editing and verification method. Helpers and check_docx are optional; "
         "no clean diagnostic report is required to save. Preserve what the user did not ask to change. "
@@ -51,11 +51,12 @@ def build_server(workspace: Workspace) -> MCPServer:
         choose a shorter positive timeout; you cannot disable or exceed that ceiling.
         Python defaults to 255 seconds, leaving 15 seconds for the result; output is unbuffered.
         Cancellation stops the call's process group. Busy calls fail immediately, without a queue.
-        Print concise evidence. If truncated, call run_python(output_cursor=stdout_next_cursor or stderr_next_cursor)
+        Print concise evidence. Continue stdout_next_cursor, stderr_next_cursor or artifacts_next_cursor with run_python(output_cursor=...)
         without code/task_id/read_paths. It returns stored text, remaining_bytes and next_cursor; no code runs again.
         Follow next_cursor until null. Cursors last for this connection; they do not grant access to other logs.
         reply_bytes chooses a smaller UTF-8 output page; requests above the server ceiling
-        (normally 24,000 bytes shared by stdout/stderr) are capped, not rejected.
+        (normally 24,000 bytes shared by stdout/stderr/artifact names) are capped, not rejected.
+        Artifact continuations contain JSONL filenames. All files are compared before paging the result list.
         For new revision/comment metadata, os.environ supplies VEQTOR_AUTHOR and fresh VEQTOR_UTC_NOW.
         Verify the requested result using a suitable method of your choice. check_docx is optional.
         """
@@ -145,7 +146,7 @@ def main():
     parser.add_argument("--call-timeout-seconds", type=float, default=DEFAULT_CALL_SECONDS,
                         help="Whole-call ceiling; set below the MCP client's timeout")
     parser.add_argument("--max-reply-bytes", type=int, default=MAX_REPLY,
-                        help="Server ceiling for a shared stdout/stderr page; raise only after client transport testing")
+                        help="Server ceiling for shared output and artifact names; raise only after client transport testing")
     args = parser.parse_args()
     project = args.project.expanduser().resolve(strict=True) if args.project else None
     root = project / ".veqtor" if project else args.workspace or args.state_dir

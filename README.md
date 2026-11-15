@@ -124,12 +124,12 @@ placement of indistinguishable copies can be ambiguous.
   server ceiling remains the fallback. A response lost after a successful save does
   not undo it: inspect status before assuming success or failure. There is no
   written-file size cap. Actual disk space, memory,
-  libraries and model context still bound practical workloads. A shared stdout/stderr text budget
+  libraries and model context still bound practical workloads. A shared output-text/artifact-name budget
   defaults to 24,000 UTF-8 bytes. `reply_bytes` can request smaller pages; larger requests are
   capped to the server's `--max-reply-bytes` ceiling. Raise that ceiling only after testing
   actual client delivery, not from advertised model context capacity. Full logs and
   scripts remain in `.runs/` and are read-only to task code. Truncated replies include
-  `stdout_next_cursor` and/or `stderr_next_cursor`, remaining byte counts and `output_hint`.
+  `stdout_next_cursor`, `stderr_next_cursor` and/or `artifacts_next_cursor`, remaining byte counts and `output_hint`.
   Call `run_python(output_cursor=...)` alone to read the stored output; follow `next_cursor` until null.
   No Python code runs again. UTF-8 characters stay intact across page boundaries, and retrying a cursor is idempotent.
   The supervisor stops the call's process group before capturing pages; continuation stays within that captured byte prefix.
@@ -137,7 +137,10 @@ placement of indistinguishable copies can be ambiguous.
   This grants no general access to private logs. Continuation tokens are 62-character authenticated
   addresses bound to the connection. Human-readable replies visibly mark each incomplete stream;
   structuredContent retains raw text for exact reconstruction. Status fields are small overhead outside
-  the output-text budget. A Python result lists only files created/modified by that call, not old scratch files.
+  the output-text budget. All visible work files are compared before selecting the changed ones.
+  Artifact names use at most one quarter of that same budget, leaving room for Python's text/errors;
+  artifacts_count and artifacts_remaining make a shortened list explicit. Remaining names continue as JSONL
+  through the same output_cursor, also after saving a task. Raw stdout/stderr are not mixed with filenames.
 - Each Python call receives `VEQTOR_UTC_NOW`, an actual UTC timestamp, alongside
   `VEQTOR_AUTHOR`. These are conveniences for new revisions/comments, not enforced
   metadata. Diagnostics check the original timezone spelling/range (without normalizing
