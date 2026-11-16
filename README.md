@@ -69,6 +69,15 @@ For ChatGPT Desktop/Codex, set `startup_timeout_sec = 180` and
 These allow the local connection to start and document calls to finish within
 Veqtor's 270-second ceiling. See the [official connection settings](https://learn.chatgpt.com/docs/extend/mcp).
 
+## Native ChatGPT installer development
+
+A native Mac installer is being prepared for ChatGPT Desktop: confirm the name for
+Word changes, click **Connect to ChatGPT**, then restart ChatGPT. It prepares the
+runtime and adds only the Workspace connection, keeping a backup of existing
+settings. The public download is pending Developer ID signing and Apple
+notarization; the manual instructions above remain the available installation path.
+Build and verification instructions are in [the release guide](packaging/RELEASING.md).
+
 ## How the workspace works
 
 The connected model writes Python for the selected documents. Four MCP tools:
