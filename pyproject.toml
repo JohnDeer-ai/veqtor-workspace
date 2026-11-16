@@ -4,11 +4,17 @@ build-backend = "hatchling.build"
 
 [project]
 name = "veqtor-workspace"
-version = "0.0.22"
-description = "Local Python workspace for adaptive document editing over MCP"
-requires-python = ">=3.12"
+version = "0.1.0"
+description = "Let your AI assistant read, edit and save your local documents"
+requires-python = ">=3.12,<3.15"
 license = "Apache-2.0"
-dependencies = ["mcp==2.0.0", "anyio>=4.5,<5", "lxml>=6.1,<7", "python-docx>=1.2,<2", "pypdf>=7,<8"]
+dependencies = ["mcp==2.2.0", "anyio>=4.5,<5", "lxml>=6.1,<7", "python-docx>=1.2,<2", "pypdf>=7,<8"]
+
+[project.urls]
+Homepage = "https://veqtor.pro"
+Documentation = "https://veqtor.pro/setup"
+Repository = "https://github.com/JohnDeer-ai/veqtor-workspace"
+Issues = "https://github.com/JohnDeer-ai/veqtor-workspace/issues"
 
 [dependency-groups]
 dev = ["pytest>=8,<10"]

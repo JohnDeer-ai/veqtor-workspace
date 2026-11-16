@@ -2,10 +2,10 @@
   "$schema": "https://raw.githubusercontent.com/modelcontextprotocol/mcpb/70fe3b34cd6dff1b3bba046638edc72a6467a4fb/schemas/mcpb-manifest-v0.4.schema.json",
   "manifest_version": "0.4",
   "name": "veqtor-workspace-pilot",
-  "display_name": "Veqtor Workspace (pilot)",
-  "version": "0.0.22",
-  "description": "Edit selected local documents by absolute path with model-written Python, snapshots and optional diagnostics.",
-  "long_description": "Give the model the file or folder paths in your request. No document folder setting is required. Each editing task snapshots the latest saved file in private application state, edits a copy and saves in place after a conflict check or to a new output path. Python reads only selected paths and writes task copies; no network. DOCX diagnostics and preview are optional; the model chooses how to verify the requested result. Save Word changes before starting.",
+  "display_name": "Veqtor Workspace",
+  "version": "0.1.0",
+  "description": "Ask your AI assistant to read, edit and save your local documents.",
+  "long_description": "Point to a saved Word file and describe what you want changed. Ask for tracked changes, comments or a clean copy. Include other documents for context. Veqtor edits a protected working copy and saves to the original file after checking for saved-file conflicts, or to a new file. Save your Word changes before starting. Veqtor runs locally; content read by your assistant is processed by your AI service.",
   "author": {
     "name": "Ilya Shilov",
     "url": "https://veqtor.pro"
@@ -60,10 +60,11 @@
   ],
   "tools_generated": false,
   "keywords": [
-    "docx",
-    "contracts",
-    "python",
-    "pilot",
+    "documents",
+    "word",
+    "editing",
+    "tracked-changes",
+    "comments",
     "local"
   ],
   "compatibility": {
@@ -73,5 +74,16 @@
     "runtimes": {
       "python": ">=3.12,<3.15"
     }
-  }
+  },
+  "homepage": "https://veqtor.pro",
+  "documentation": "https://veqtor.pro/setup",
+  "support": "https://github.com/JohnDeer-ai/veqtor-workspace/issues",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/JohnDeer-ai/veqtor-workspace.git"
+  },
+  "icon": "icon.png",
+  "privacy_policies": [
+    "https://veqtor.pro/security"
+  ]
 }

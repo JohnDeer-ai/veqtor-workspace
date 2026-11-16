@@ -2,14 +2,17 @@
 """The connected model writes code; the server handles access, snapshots and checks."""
 
 import argparse
+import inspect
 import json
 import sys
 from pathlib import Path
 from typing import Literal
 
 from mcp.server import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import CallToolResult, ImageContent, TextContent, ToolAnnotations
 
+from veqtor_workspace import __version__
 from veqtor_workspace.operations import Operations
 from veqtor_workspace.output import MAX_REPLY, output_text
 from veqtor_workspace.runner import DEFAULT_CALL_SECONDS, DEFAULT_STATE, Workspace
@@ -17,7 +20,7 @@ from veqtor_workspace.runner import DEFAULT_CALL_SECONDS, DEFAULT_STATE, Workspa
 
 def build_server(workspace: Workspace) -> MCPServer:
     operations = Operations(workspace)
-    server = MCPServer("veqtor-workspace", version="0.0.22", instructions=(
+    server = MCPServer("veqtor-workspace", version=__version__, instructions=(
         "Local files and Python for model-directed document work. Start with workspace_info for the short workflow. "
         "Choose your own editing and verification method. Helpers and check_docx are optional; "
         "no clean diagnostic report is required to save. Preserve what the user did not ask to change. "
@@ -27,12 +30,25 @@ def build_server(workspace: Workspace) -> MCPServer:
         "a new output at an unused path. After an interrupted save, read document_task(status) before retrying."
     ))
 
-    @server.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    def tool(**options):
+        def register(function):
+            return server.tool(description=inspect.cleandoc(function.__doc__ or ""), **options)(function)
+        return register
+
+    async def call(operation, arguments):
+        try:
+            return await operations.call(operation, arguments)
+        except ValueError as exc:
+            # MCP 2.2 masks unexpected exceptions. Keep actionable input/state
+            # errors visible so the assistant can recover without retrying edits.
+            raise ToolError(str(exc)) from exc
+
+    @tool(annotations=ToolAnnotations(readOnlyHint=True))
     async def workspace_info() -> dict:
         """Return the short workflow, author, runtime limits and a path to optional reference material."""
-        return await operations.call("workspace_info", {})
+        return await call("workspace_info", {})
 
-    @server.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=False))
+    @tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=False))
     async def run_python(code: str | None = None, timeout_seconds: float = workspace.script_timeout_seconds,
                          task_id: str | None = None, read_paths: list[str] | None = None,
                          output_cursor: str | None = None, reply_bytes: int | None = None) -> CallToolResult:
@@ -60,12 +76,12 @@ def build_server(workspace: Workspace) -> MCPServer:
         For new revision/comment metadata, os.environ supplies VEQTOR_AUTHOR and fresh VEQTOR_UTC_NOW.
         Verify the requested result using a suitable method of your choice. check_docx is optional.
         """
-        result = await operations.call("run_python", {"code": code, "timeout_seconds": timeout_seconds,
+        result = await call("run_python", {"code": code, "timeout_seconds": timeout_seconds,
                                                      "task_id": task_id, "read_paths": read_paths,
                                                      "output_cursor": output_cursor, "reply_bytes": reply_bytes})
         return CallToolResult(content=[TextContent(type="text", text=output_text(result))], structuredContent=result)
 
-    @server.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=False))
+    @tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=False))
     async def document_task(action: Literal["start", "save", "status"], file: str | None = None,
                             task_id: str | None = None, read_paths: list[str] | None = None) -> dict:
         """Snapshot a file, save the result in place or under a new name, or inspect save status.
@@ -88,10 +104,10 @@ def build_server(workspace: Workspace) -> MCPServer:
         Saving closes editing. To read the result, use run_python(read_paths=[file], code=...) without task_id.
         Start a fresh task only for further edits; after an interrupted save, inspect status first.
         """
-        return await operations.call("document_task", {"action": action, "file": file,
+        return await call("document_task", {"action": action, "file": file,
                                                        "task_id": task_id, "read_paths": read_paths})
 
-    @server.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False))
+    @tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False))
     async def check_docx(original: str | None = None, candidate: str | None = None, render: bool = False,
                    preview_timeout_seconds: float = min(60, workspace.call_timeout_seconds), preview_id: str | None = None,
                    preview_pages: list[int] | None = None,
@@ -121,7 +137,7 @@ def build_server(workspace: Workspace) -> MCPServer:
         Report structural checks, visual review, Word opening and Word accept/reject separately.
         See workspace_info's optional reference for details. No automatic retry.
         """
-        reply = await operations.call("check_docx", {
+        reply = await call("check_docx", {
             "original": original, "candidate": candidate, "render": render, "task_id": task_id,
             "preview_timeout_seconds": preview_timeout_seconds, "preview_id": preview_id,
             "preview_pages": preview_pages, "preview_side": preview_side,
@@ -135,7 +151,7 @@ def build_server(workspace: Workspace) -> MCPServer:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Local adaptive document workspace (macOS prototype)")
+    parser = argparse.ArgumentParser(description="Veqtor Workspace for macOS")
     location = parser.add_mutually_exclusive_group()
     location.add_argument("--project", type=Path, help="Document folder; private snapshots are kept in .veqtor/")
     location.add_argument("--workspace", type=Path, help="Legacy inputs/work copy workspace")

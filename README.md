@@ -1,26 +1,85 @@
 # Veqtor Workspace
 
-An independent local document workspace, extracted from the Veqtor pilot. The connected model
-writes Python for the selected documents. Four MCP tools: `workspace_info`,
-`document_task`, `run_python`, `check_docx`. No embedded model, account service or negotiation database.
-The model chooses how to edit and verify the result. Reading/edit helpers, diagnostics
-and preview are optional; saving never requires a clean diagnostic report.
+Ask your AI assistant to read, edit and save the documents on your Mac. Point to your
+working Word file, include supporting documents for context, and describe the result
+you want. Ask for tracked changes, comments or a clean copy. Open the result in Word.
 
-## Try on macOS
+## Install on Mac
 
-Keep contracts and generated artifacts outside Git. Use copies for initial testing.
-The default connection has no document-folder setting: the model supplies absolute
-paths from each user request. macOS permissions still apply.
+**[Download Veqtor Workspace for Claude Desktop](https://github.com/JohnDeer-ai/veqtor-workspace/releases/download/v0.1.0/veqtor-workspace-0.1.0-macos.mcpb)**
+
+1. Install and sign in to [Claude Desktop](https://claude.com/download).
+2. Open the downloaded `.mcpb` file with Claude Desktop and choose **Install**.
+3. Enter the name you want used for new comments and tracked changes, then enable
+   Veqtor Workspace. Start a new chat.
+
+No terminal commands or separate Python installation are needed. Claude downloads
+the required runtime and libraries on the first start; allow that step to finish.
+The extension runs on Apple Silicon and Intel Macs. An organization may restrict
+custom extensions; ask its administrator if installation is disabled.
+
+**[Installation guide and ChatGPT Desktop setup](https://veqtor.pro/setup)** ·
+[Release notes and checksums](https://github.com/JohnDeer-ai/veqtor-workspace/releases/tag/v0.1.0)
+
+### Try your first document
+
+Save and close a copy of a Word document. In Finder, select it and press **⌥⌘C** to
+copy its full location. Paste it into a new chat with this request:
+
+> Use Veqtor Workspace to open the Word file at [paste the file location]. Make the
+> wording clearer without changing its meaning. Show your edits as tracked changes
+> and save the result as a new file in the same folder. Tell me where it is.
+
+You can also provide supporting documents, such as another agreement, a report or
+meeting notes. The assistant reads the files you identify for context.
+
+Veqtor runs locally. Document content returned to your assistant becomes part of
+your conversation with that AI service. Track Changes is used when you ask for it.
+Save your Word changes before starting, and avoid editing the same file while the
+assistant works. Unsaved Word changes cannot be detected. Review the result in Word.
+
+## ChatGPT Desktop and other local MCP clients
+
+The `.mcpb` installer is for Claude Desktop. For ChatGPT Desktop with local work
+enabled, or Codex CLI/IDE, download and unzip the
+[v0.1.0 source](https://github.com/JohnDeer-ai/veqtor-workspace/archive/refs/tags/v0.1.0.zip)
+to a permanent folder and install [uv](https://docs.astral.sh/uv/getting-started/installation/).
+Add a local STDIO server using this command (replace the folder and your name):
+
+Before adding the connection, prepare the runtime once in Terminal:
 
 ```sh
-uv run --project /absolute/path/to/veqtor-workspace veqtor-workspace \
+uv sync --frozen --no-dev --project /absolute/path/to/veqtor-workspace
+```
+
+Then use this launch command:
+
+```sh
+uv run --frozen --no-dev --project /absolute/path/to/veqtor-workspace veqtor-workspace \
   --author 'Your Name'
 ```
 
 Use that same command and arguments as a separate local stdio MCP entry in your
 client. An optional `--python /absolute/path/to/python` selects a different document
 runtime with the required libraries. `uv run` provisions the default environment.
-No existing Veqtor installation or client configuration is changed by this prototype.
+This command does not change other client connections. Local STDIO connections
+require a desktop/local client; this is not a remote server for ChatGPT in a browser.
+For ChatGPT Desktop/Codex, set `startup_timeout_sec = 180` and
+`tool_timeout_sec = 330` in this server's section of `~/.codex/config.toml`.
+These allow the local connection to start and document calls to finish within
+Veqtor's 270-second ceiling. See the [official connection settings](https://learn.chatgpt.com/docs/extend/mcp).
+
+## How the workspace works
+
+The connected model writes Python for the selected documents. Four MCP tools:
+`workspace_info`, `document_task`, `run_python`, `check_docx`. No embedded model,
+account service or negotiation database. The model chooses how to edit and verify
+the result. Reading/edit helpers, diagnostics and preview are optional; saving
+never requires a clean diagnostic report.
+
+Keep documents and generated artifacts outside Git. Use copies for initial testing.
+The connection has no document-folder setting: the model supplies absolute paths
+from each user request. macOS permissions still apply.
 
 Ask the model to read `workspace_info`, perform the requested changes, verify the result
 by a suitable method and save it. The server snapshots the latest saved version at
@@ -216,7 +275,7 @@ An explicit `--preview-config` can select another config; legacy local `.preview
 {"python": "/absolute/path/to/render-python", "script": "/absolute/path/to/render_docx.py"}
 ```
 
-The pilot does not install or bundle an office suite or rewrite renderer configuration.
+Veqtor does not install or bundle an office suite or rewrite renderer configuration.
 Without a usable renderer, previews explicitly report `not_available` and editing still works.
 The fixed converter runs separately from model-written code, without inherited
 credentials or network access and with both input documents protected. It has broader

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Build the pilot as a Claude Desktop extension (.mcpb), installed and managed like Veqtor.
+"""Build Veqtor Workspace as a Claude Desktop extension (.mcpb).
 
 Usage: python packaging/build_mcpb.py --out DIR [--default-author NAME]
 Defaults only prefill the install dialog; the package itself stays machine-independent.
@@ -26,10 +26,11 @@ def payloads(author: str | None = None) -> dict[str, bytes]:
     if author:
         manifest["user_config"]["author"]["default"] = author
     files = {"manifest.json": (json.dumps(manifest, ensure_ascii=False, indent=2) + "\n").encode()}
-    for name in ("pyproject.toml", "uv.lock", "README.md", "LICENSE"):
+    for name in ("pyproject.toml", "uv.lock", ".python-version", "README.md", "LICENSE"):
         files[name] = (ROOT / name).read_bytes()
+    files["icon.png"] = (ROOT / "packaging/icon.png").read_bytes()
     for path in sorted((ROOT / "veqtor_workspace").rglob("*")):
-        if path.is_file() and "__pycache__" not in path.parts and path.suffix != ".pyc":
+        if path.is_file() and not path.is_symlink() and "__pycache__" not in path.parts and path.suffix in {".py", ".md"}:
             files[path.relative_to(ROOT).as_posix()] = path.read_bytes()
     return files
 
@@ -38,7 +39,7 @@ def build(out: Path, author: str | None = None) -> Path:
     files = payloads(author)
     manifest = json.loads(files["manifest.json"])
     out.mkdir(parents=True, exist_ok=True)
-    target = out / f"{manifest['name']}-{manifest['version']}.mcpb"
+    target = out / f"veqtor-workspace-{manifest['version']}-macos.mcpb"
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
         for name, data in sorted(files.items()):
             info = zipfile.ZipInfo(name, date_time=DATE)
