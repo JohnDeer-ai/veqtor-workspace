@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Test the exact extension launch in a clean, disposable macOS environment.
 
-Run with: uv run python packaging/smoke_mcpb.py dist/veqtor-workspace-0.1.1-macos-arm64.mcpb
+Run with: uv run python packaging/smoke_mcpb.py dist/veqtor-workspace-VERSION-macos-arm64.mcpb
 Requires uv and internet for a fresh managed Python/runtime download. Never changes
 an installed client or uses real documents. This is a protocol test, not a GUI test.
 """
@@ -47,7 +47,18 @@ async def exercise(bundle: Path, root: Path):
     # project. A successful source build on CI is not an installer acceptance.
     await asyncio.to_thread(subprocess.run,
         [uv, "sync", "--frozen", "--no-dev", "--no-install-project", "--no-build", "--directory", str(extension)],
-        env=env, cwd=extension, check=True, timeout=300)
+        env=env, cwd=extension, check=True, timeout=600)
+    params = StdioServerParameters(command=uv, args=args, env=env, cwd=str(extension))
+    await exercise_documents(params, root, manifest["version"], author)
+    assert any((root / "python").glob("cpython-*")), "Managed Python was not downloaded"
+    print(json.dumps({"bundle": bundle.name, "sha256": hashlib.sha256(bundle.read_bytes()).hexdigest(),
+                      "version": manifest["version"], "tools": 4, "fresh_runtime": True, "dependency_wheels_only": True,
+                      "tracked_change": True, "comment": True, "save_as": True,
+                      "in_place_save": True, "source_preserved": True, "saved_conflict_refused": True}))
+
+
+async def exercise_documents(params: StdioServerParameters, root: Path, version: str, author: str):
+    """Verify either installer through the exact connection it prepared."""
     source = root / "проверка with spaces.docx"
     doc = Document()
     doc.add_paragraph("The Client has 20 business days to review the Deliverables.")
@@ -57,7 +68,6 @@ async def exercise(bundle: Path, root: Path):
     supporting.write_text("Use 40 business days for the review period.")
     target = root / "reviewed copy.docx"
 
-    params = StdioServerParameters(command=uv, args=args, env=env, cwd=str(extension))
     async with Client(stdio_client(params)) as client:
         catalog = await client.list_tools()
         listed = catalog.tools if hasattr(catalog, "tools") else catalog
@@ -70,7 +80,7 @@ async def exercise(bundle: Path, root: Path):
             return value.get("result", value)
 
         info = await call("workspace_info", {})
-        assert info["prototype"] == manifest["version"] and info["author"] == author
+        assert info["prototype"] == version and info["author"] == author
         task = await call("document_task", {"action": "start", "file": str(source), "read_paths": [str(supporting)]})
         code = f'''
 import os
@@ -128,13 +138,6 @@ else:
         plain.write_text("newer saved version")
         refused = await call("document_task", {"action": "save", "task_id": task["task_id"]})
         assert refused["status"] == "conflict" and plain.read_text() == "newer saved version"
-
-    assert any((root / "python").glob("cpython-*")), "Managed Python was not downloaded"
-    print(json.dumps({"bundle": bundle.name, "sha256": hashlib.sha256(bundle.read_bytes()).hexdigest(),
-                      "version": manifest["version"], "tools": 4, "fresh_runtime": True, "dependency_wheels_only": True,
-                      "tracked_change": True, "comment": True, "save_as": True,
-                      "in_place_save": True, "source_preserved": True, "saved_conflict_refused": True}))
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)

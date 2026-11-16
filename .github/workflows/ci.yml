@@ -27,7 +27,7 @@ jobs:
       - name: Check locked dependencies
         run: uv lock --check
       - name: Run document and lifecycle tests
-        run: uv run --frozen pytest -q
+        run: uv run --frozen --group installer pytest -q
       - name: Build the public extension
         run: uv run --frozen python packaging/build_mcpb.py --out dist
       - name: Validate the extension manifest
@@ -36,11 +36,19 @@ jobs:
         run: uv run --frozen python packaging/smoke_mcpb.py dist/veqtor-workspace-*-macos-arm64.mcpb
       - name: Audit locked runtime dependencies
         run: |
-          uv export --frozen --no-dev --no-emit-project --format requirements-txt --output-file /tmp/runtime-requirements.txt
+          uv export --frozen --no-dev --group installer --no-emit-project --format requirements-txt --output-file /tmp/runtime-requirements.txt
           uvx pip-audit==2.10.1 --requirement /tmp/runtime-requirements.txt --require-hashes --disable-pip --progress-spinner off
+      - name: Build the native ChatGPT installer candidate
+        run: uv run --frozen python packaging/build_chatgpt_app.py --out dist/chatgpt
+      - name: Test the native installer in a fresh disposable profile
+        run: uv run --frozen python packaging/smoke_chatgpt_app.py "dist/chatgpt/Veqtor Workspace Setup.app" dist/chatgpt/verify-installer
+      - name: Package the explicitly unsigned ChatGPT download
+        run: uv run --frozen python packaging/package_chatgpt_app.py --app "dist/chatgpt/Veqtor Workspace Setup.app" --out dist --unsigned
       - name: Save the tested installer
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: veqtor-workspace-${{ matrix.os }}
-          path: dist/*.mcpb
+          path: |
+            dist/*.mcpb
+            dist/*.dmg
           if-no-files-found: error
