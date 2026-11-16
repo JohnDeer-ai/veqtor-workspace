@@ -42,9 +42,13 @@ jobs:
         run: uv run --frozen python packaging/build_chatgpt_app.py --out dist/chatgpt
       - name: Test the native installer in a fresh disposable profile
         run: uv run --frozen python packaging/smoke_chatgpt_app.py "dist/chatgpt/Veqtor Workspace Setup.app" dist/chatgpt/verify-installer
+      - name: Package the explicitly unsigned ChatGPT download
+        run: uv run --frozen python packaging/package_chatgpt_app.py --app "dist/chatgpt/Veqtor Workspace Setup.app" --out dist --unsigned
       - name: Save the tested installer
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: veqtor-workspace-${{ matrix.os }}
-          path: dist/*.mcpb
+          path: |
+            dist/*.mcpb
+            dist/*.dmg
           if-no-files-found: error

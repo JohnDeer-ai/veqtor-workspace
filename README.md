@@ -6,7 +6,9 @@ you want. Ask for tracked changes, comments or a clean copy. Open the result in 
 
 ## Install on Mac with Apple Silicon
 
-**[Download Veqtor Workspace for Claude Desktop](https://github.com/JohnDeer-ai/veqtor-workspace/releases/download/v0.1.1/veqtor-workspace-0.1.1-macos-arm64.mcpb)**
+### Claude Desktop
+
+**[Download Veqtor Workspace for Claude Desktop](https://github.com/JohnDeer-ai/veqtor-workspace/releases/download/v0.1.2/veqtor-workspace-0.1.2-macos-arm64.mcpb)**
 
 1. Install and sign in to [Claude Desktop](https://claude.com/download).
 2. Open the downloaded `.mcpb` file with Claude Desktop and choose **Install**.
@@ -19,7 +21,27 @@ The public installer supports Apple Silicon Macs (M1 or newer). Intel Macs are n
 custom extensions; ask its administrator if installation is disabled.
 
 **[Installation guide and ChatGPT Desktop setup](https://veqtor.pro/setup)** ·
-[Release notes and checksums](https://github.com/JohnDeer-ai/veqtor-workspace/releases/tag/v0.1.1)
+[Release notes and checksums](https://github.com/JohnDeer-ai/veqtor-workspace/releases/tag/v0.1.2)
+
+### ChatGPT Desktop
+
+**[Download Veqtor Workspace for ChatGPT Desktop](https://github.com/JohnDeer-ai/veqtor-workspace/releases/download/v0.1.2/veqtor-workspace-0.1.2-chatgpt-macos-arm64.dmg)**
+
+This installer is **not signed with Developer ID or notarized by Apple**. After
+macOS blocks its first launch, open **System Settings → Privacy & Security**, find
+**Veqtor Workspace Setup**, choose **Open Anyway**, then confirm **Open**. Only
+allow the installer from the official release above. [Apple explains this permission](https://support.apple.com/en-us/102445).
+
+1. Open the downloaded disk image and **Veqtor Workspace Setup**.
+2. Confirm the name for new Word changes and click **Connect to ChatGPT**.
+3. Let installation finish, then restart ChatGPT Desktop and start a new chat.
+
+Requires an Apple Silicon Mac with macOS 13 or newer and ChatGPT Desktop with
+local work enabled. No terminal commands or manual connection settings are needed.
+The installer downloads the required components, checks the connection and backs
+up the existing settings. Other connections and approval preferences are preserved.
+An existing disabled Workspace connection stays disabled. This connects the local
+desktop app, not ChatGPT in a browser.
 
 ### Try your first document
 
@@ -38,11 +60,11 @@ your conversation with that AI service. Track Changes is used when you ask for i
 Save your Word changes before starting, and avoid editing the same file while the
 assistant works. Unsaved Word changes cannot be detected. Review the result in Word.
 
-## ChatGPT Desktop and other local MCP clients
+## Manual setup for local MCP clients
 
-The `.mcpb` installer is for Claude Desktop. For ChatGPT Desktop with local work
-enabled, or Codex CLI/IDE, download and unzip the
-[v0.1.1 source](https://github.com/JohnDeer-ai/veqtor-workspace/archive/refs/tags/v0.1.1.zip)
+For advanced setup in ChatGPT Desktop or another local MCP client, including
+Codex CLI/IDE, download and unzip the
+[v0.1.2 source](https://github.com/JohnDeer-ai/veqtor-workspace/archive/refs/tags/v0.1.2.zip)
 to a permanent folder and install [uv](https://docs.astral.sh/uv/getting-started/installation/).
 Add a local STDIO server using this command (replace the folder and your name):
 
@@ -68,15 +90,6 @@ For ChatGPT Desktop/Codex, set `startup_timeout_sec = 180` and
 `tool_timeout_sec = 330` in this server's section of `~/.codex/config.toml`.
 These allow the local connection to start and document calls to finish within
 Veqtor's 270-second ceiling. See the [official connection settings](https://learn.chatgpt.com/docs/extend/mcp).
-
-## Native ChatGPT installer development
-
-A native Mac installer is being prepared for ChatGPT Desktop: confirm the name for
-Word changes, click **Connect to ChatGPT**, then restart ChatGPT. It prepares the
-runtime and adds only the Workspace connection, keeping a backup of existing
-settings. The public download is pending Developer ID signing and Apple
-notarization; the manual instructions above remain the available installation path.
-Build and verification instructions are in [the release guide](packaging/RELEASING.md).
 
 ## How the workspace works
 

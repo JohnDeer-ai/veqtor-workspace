@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Build the native ChatGPT installer. Public distribution requires Developer ID
-signing and successful Apple notarization; the default build is a local candidate.
+"""Build the native ChatGPT installer as a local, ad-hoc signed app.
+Public packaging must explicitly choose unsigned distribution or Developer ID
+signing and Apple notarization; see packaging/RELEASING.md.
 """
 from __future__ import annotations
 

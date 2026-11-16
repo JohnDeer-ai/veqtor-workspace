@@ -46,11 +46,32 @@ Open the app for a separate visual check, without connecting a real client durin
 automated tests. A protocol test is not evidence that the ChatGPT UI has loaded
 the connection; record these checks separately.
 
-The local candidate is ad-hoc signed for development. **Do not publish it as a
-normal Mac installer.** An Apple Personal Team / Apple Development certificate
-cannot sign public outside-App-Store distribution. A paid Apple Developer Program
-membership, Developer ID Application certificate and Apple notarization are
-required for the intended public download.
+The local app is ad-hoc signed. An Apple Personal Team / Apple Development
+certificate cannot provide Developer ID signing for public distribution.
+
+### Current unsigned download
+
+The v0.1.2 ChatGPT download is deliberately distributed **without Developer ID
+signing or Apple notarization**, with the publisher's explicit decision. Package it
+with the visible macOS permission instructions:
+
+```sh
+uv run --frozen python packaging/package_chatgpt_app.py \
+  --app 'dist/chatgpt-candidate/Veqtor Workspace Setup.app' \
+  --out dist/public-chatgpt --unsigned
+```
+
+The download page, release notes and included Read me must state this limitation
+before describing installation. Users may need to allow this specific app in macOS
+Privacy & Security after the first blocked launch. Do not recommend disabling
+Gatekeeper or removing quarantine globally. Managed Macs may prohibit this choice.
+Gatekeeper rejection of this unsigned build is expected, not a passed trust check.
+Publish only after the package/runtime checks pass and verify the downloaded hashes.
+
+### Future signed download
+
+A paid Apple Developer Program membership, Developer ID Application certificate
+and Apple notarization enable a download without that unsigned-app block.
 
 Once the distribution identity and a `notarytool` keychain profile already exist:
 
@@ -65,8 +86,9 @@ uv run --frozen python packaging/release_chatgpt_app.py \
 The release script signs the bundled helper and app with the hardened runtime,
 creates a signed disk image, submits it to Apple, requires `Accepted`, staples the
 ticket, and verifies Gatekeeper acceptance. It does not create credentials or
-accept passwords. Only after this succeeds should the tested `.dmg`, `.mcpb` and
-checksums be attached to the same tagged release and linked from `/setup`.
+accept passwords. Only after this succeeds may the download be described as signed
+and notarized. Attach the tested `.dmg`, `.mcpb` and checksums to the same tagged
+release, then update `/setup`.
 
 Installation creates a separate runtime under
 `~/Library/Application Support/Veqtor Workspace/ChatGPT/releases/`. It checks the
