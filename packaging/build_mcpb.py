@@ -39,7 +39,7 @@ def build(out: Path, author: str | None = None) -> Path:
     files = payloads(author)
     manifest = json.loads(files["manifest.json"])
     out.mkdir(parents=True, exist_ok=True)
-    target = out / f"veqtor-workspace-{manifest['version']}-macos.mcpb"
+    target = out / f"veqtor-workspace-{manifest['version']}-macos-arm64.mcpb"
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
         for name, data in sorted(files.items()):
             info = zipfile.ZipInfo(name, date_time=DATE)

@@ -4,9 +4,9 @@ Ask your AI assistant to read, edit and save the documents on your Mac. Point to
 working Word file, include supporting documents for context, and describe the result
 you want. Ask for tracked changes, comments or a clean copy. Open the result in Word.
 
-## Install on Mac
+## Install on Mac with Apple Silicon
 
-**[Download Veqtor Workspace for Claude Desktop](https://github.com/JohnDeer-ai/veqtor-workspace/releases/download/v0.1.0/veqtor-workspace-0.1.0-macos.mcpb)**
+**[Download Veqtor Workspace for Claude Desktop](https://github.com/JohnDeer-ai/veqtor-workspace/releases/download/v0.1.1/veqtor-workspace-0.1.1-macos-arm64.mcpb)**
 
 1. Install and sign in to [Claude Desktop](https://claude.com/download).
 2. Open the downloaded `.mcpb` file with Claude Desktop and choose **Install**.
@@ -15,11 +15,11 @@ you want. Ask for tracked changes, comments or a clean copy. Open the result in 
 
 No terminal commands or separate Python installation are needed. Claude downloads
 the required runtime and libraries on the first start; allow that step to finish.
-The extension runs on Apple Silicon and Intel Macs. An organization may restrict
+The public installer supports Apple Silicon Macs (M1 or newer). Intel Macs are not supported by this installer. An organization may restrict
 custom extensions; ask its administrator if installation is disabled.
 
 **[Installation guide and ChatGPT Desktop setup](https://veqtor.pro/setup)** ·
-[Release notes and checksums](https://github.com/JohnDeer-ai/veqtor-workspace/releases/tag/v0.1.0)
+[Release notes and checksums](https://github.com/JohnDeer-ai/veqtor-workspace/releases/tag/v0.1.1)
 
 ### Try your first document
 
@@ -42,7 +42,7 @@ assistant works. Unsaved Word changes cannot be detected. Review the result in W
 
 The `.mcpb` installer is for Claude Desktop. For ChatGPT Desktop with local work
 enabled, or Codex CLI/IDE, download and unzip the
-[v0.1.0 source](https://github.com/JohnDeer-ai/veqtor-workspace/archive/refs/tags/v0.1.0.zip)
+[v0.1.1 source](https://github.com/JohnDeer-ai/veqtor-workspace/archive/refs/tags/v0.1.1.zip)
 to a permanent folder and install [uv](https://docs.astral.sh/uv/getting-started/installation/).
 Add a local STDIO server using this command (replace the folder and your name):
 

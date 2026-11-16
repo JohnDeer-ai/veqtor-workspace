@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "veqtor-workspace"
-version = "0.1.0"
+version = "0.1.1"
 description = "Let your AI assistant read, edit and save your local documents"
 requires-python = ">=3.12,<3.15"
 license = "Apache-2.0"
@@ -27,3 +27,8 @@ packages = ["veqtor_workspace"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.uv]
+# These dependencies contain native code. Installation must never silently
+# require a user to install Rust, Xcode or OpenSSL development libraries.
+no-build-package = ["cryptography", "cffi", "lxml", "pydantic-core", "rpds-py"]
