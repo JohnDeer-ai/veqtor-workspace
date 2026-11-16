@@ -16,7 +16,7 @@ spec.loader.exec_module(build_mcpb)
 
 def test_package_contents_and_launch_command(tmp_path):
     target = build_mcpb.build(tmp_path, author="Test Author")
-    assert target.name == "veqtor-workspace-0.1.0-macos.mcpb"
+    assert target.name == "veqtor-workspace-0.1.1-macos-arm64.mcpb"
     with zipfile.ZipFile(target) as archive:
         names = set(archive.namelist())
         manifest = json.loads(archive.read("manifest.json"))
@@ -43,7 +43,7 @@ def test_public_package_is_reproducible_and_machine_independent(tmp_path):
     with zipfile.ZipFile(first) as archive:
         manifest = json.loads(archive.read("manifest.json"))
         project = tomllib.loads(archive.read("pyproject.toml").decode())["project"]
-        assert manifest["version"] == project["version"] == "0.1.0"
+        assert manifest["version"] == project["version"] == "0.1.1"
         assert manifest["name"] == "veqtor-workspace-pilot"  # Existing extensions update in place.
         assert manifest["display_name"] == "Veqtor Workspace"
         assert manifest["compatibility"]["platforms"] == ["darwin"]

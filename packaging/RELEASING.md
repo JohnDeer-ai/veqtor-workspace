@@ -8,8 +8,9 @@
 3. Run `packaging/smoke_mcpb.py` through `uv run --frozen python`, passing the built
    extension. It downloads a fresh runtime and tests actual MCP calls using only
    disposable documents. It does not install anything into a desktop client.
-4. Require green Workspace CI on both Apple Silicon and Intel Macs. Compare the
-   two uploaded installer hashes with the local package. Never build public assets
+4. Require green Workspace CI on Apple Silicon. The fresh-runtime smoke must install all
+   dependencies with `--no-build`; a CI compiler must not mask a missing wheel.
+   Compare the uploaded installer hash with the local package. Never build public assets
    with `--default-author`.
 5. Tag the tested commit, attach the tested `.mcpb` and `SHA256SUMS` to its GitHub
    release, and verify a fresh download against the checksum. Update the version,

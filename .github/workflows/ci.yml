@@ -18,7 +18,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-15, macos-15-intel]
+        os: [macos-15]
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
@@ -32,8 +32,8 @@ jobs:
         run: uv run --frozen python packaging/build_mcpb.py --out dist
       - name: Validate the extension manifest
         run: npx --yes @anthropic-ai/mcpb@2.1.2 validate packaging/manifest.json
-      - name: Launch the exact package with a fresh managed runtime
-        run: uv run --frozen python packaging/smoke_mcpb.py dist/veqtor-workspace-*-macos.mcpb
+      - name: Install dependencies without compilers and launch the exact package
+        run: uv run --frozen python packaging/smoke_mcpb.py dist/veqtor-workspace-*-macos-arm64.mcpb
       - name: Audit locked runtime dependencies
         run: |
           uv export --frozen --no-dev --no-emit-project --format requirements-txt --output-file /tmp/runtime-requirements.txt

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Test the exact extension launch in a clean, disposable macOS environment.
 
-Run with: uv run python packaging/smoke_mcpb.py dist/veqtor-workspace-0.1.0-macos.mcpb
+Run with: uv run python packaging/smoke_mcpb.py dist/veqtor-workspace-0.1.1-macos-arm64.mcpb
 Requires uv and internet for a fresh managed Python/runtime download. Never changes
 an installed client or uses real documents. This is a protocol test, not a GUI test.
 """
@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import json
 import shutil
+import subprocess
 import tempfile
 import zipfile
 from pathlib import Path
@@ -41,6 +42,12 @@ async def exercise(bundle: Path, root: Path):
            "UV_CACHE_DIR": str(root / "cache"), "UV_PYTHON_INSTALL_DIR": str(root / "python"),
            "UV_PYTHON_PREFERENCE": "only-managed", "PYTHONPATH": "", "VIRTUAL_ENV": "",
            **config.get("env", {})}
+    # Hosted runners have compilers that a normal Mac may not have. Require
+    # published wheels for every dependency before building our pure-Python
+    # project. A successful source build on CI is not an installer acceptance.
+    await asyncio.to_thread(subprocess.run,
+        [uv, "sync", "--frozen", "--no-dev", "--no-install-project", "--no-build", "--directory", str(extension)],
+        env=env, cwd=extension, check=True, timeout=300)
     source = root / "проверка with spaces.docx"
     doc = Document()
     doc.add_paragraph("The Client has 20 business days to review the Deliverables.")
@@ -124,7 +131,7 @@ else:
 
     assert any((root / "python").glob("cpython-*")), "Managed Python was not downloaded"
     print(json.dumps({"bundle": bundle.name, "sha256": hashlib.sha256(bundle.read_bytes()).hexdigest(),
-                      "version": manifest["version"], "tools": 4, "fresh_runtime": True,
+                      "version": manifest["version"], "tools": 4, "fresh_runtime": True, "dependency_wheels_only": True,
                       "tracked_change": True, "comment": True, "save_as": True,
                       "in_place_save": True, "source_preserved": True, "saved_conflict_refused": True}))
 
