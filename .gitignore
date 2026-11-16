@@ -17,6 +17,7 @@ work/
 *.pptx
 *.pdf
 *.png
+!packaging/icon.png
 *.jpg
 *.log
 .veqtor/

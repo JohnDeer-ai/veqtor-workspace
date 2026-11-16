@@ -13,6 +13,7 @@ from pathlib import Path
 
 import anyio
 
+from veqtor_workspace import __version__
 from veqtor_workspace.checks import check_docx
 from veqtor_workspace.files import atomic_save
 from veqtor_workspace.output import OutputCursors, collect_output, read_output, reply_limit
@@ -79,7 +80,9 @@ class Operations:
                 raise ValueError(f"Operation worker stopped ({process.returncode}): {err[:2000].decode(errors='replace')}")
             reply = json.loads(out)
             if "error" in reply:
-                raise ValueError(reply["error"])
+                if reply.get("expected"):
+                    raise ValueError(reply["error"])
+                raise RuntimeError(reply["error"])
             result = reply["result"]
             if operation == "run_python":
                 # Descendants can still append after the main Python script exits.
@@ -174,7 +177,7 @@ def perform(w: Workspace, operation: str, args: dict) -> dict:
         try:
             cached = json.loads(receipt.read_text())
             result = cached["report"]
-            reused_check = (cached["version"] == "0.0.22" and cached["author"] == w.author
+            reused_check = (cached["version"] == __version__ and cached["author"] == w.author
                             and cached["changes_start"] == changes_start
                             and result["original_sha256"] == preview["files"]["original"]["sha256"]
                             and result["candidate_sha256"] == preview["files"]["candidate"]["sha256"])
@@ -191,7 +194,7 @@ def perform(w: Workspace, operation: str, args: dict) -> dict:
                 and result.get("original_sha256") == preview["files"]["original"]["sha256"]
                 and result.get("candidate_sha256") == preview["files"]["candidate"]["sha256"]):
             with atomic_save(Path(preview["directory"]) / "check.json") as temporary:
-                temporary.write_text(json.dumps({"version": "0.0.22", "author": w.author,
+                temporary.write_text(json.dumps({"version": __version__, "author": w.author,
                                                  "changes_start": changes_start, "report": result}))
         if reused_check:
             result = {key: result[key] for key in ("status", "summary", "original_sha256", "candidate_sha256",
@@ -220,7 +223,7 @@ def main():
                       max_reply_bytes=payload.get("max_reply_bytes", 24_000))
         reply = {"result": perform(w, payload["operation"], payload["arguments"])}
     except Exception as exc:  # noqa: BLE001 - serialize worker failures across the process boundary
-        reply = {"error": f"{type(exc).__name__}: {exc}"}
+        reply = {"error": f"{type(exc).__name__}: {exc}", "expected": isinstance(exc, (ValueError, OSError))}
     print(json.dumps(reply, ensure_ascii=False), flush=True)
 
 

@@ -14,6 +14,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from veqtor_workspace import __version__
 from veqtor_workspace.output import MAX_REPLY, collect_output, reply_limit
 from veqtor_workspace.preview import renderer_info
 
@@ -31,7 +32,7 @@ class Workspace:
                  dynamic: bool = False, read_paths: list[str] | None = None, preview_config: Path | None = None,
                  private_root: Path | None = None, max_reply_bytes: int = MAX_REPLY):
         if platform.system() != "Darwin" or not Path("/usr/bin/sandbox-exec").exists():
-            raise RuntimeError("This prototype requires macOS sandbox-exec; no unrestricted fallback.")
+            raise RuntimeError("Veqtor Workspace requires macOS sandbox-exec; no unrestricted fallback.")
         self.root = root.expanduser().resolve()
         self.private_root = (private_root or self.root).expanduser().resolve()
         self.project = project.expanduser().resolve(strict=True) if project else None
@@ -95,7 +96,7 @@ class Workspace:
 
     def info(self) -> dict:
         return {
-            "prototype": "0.0.22", "author": self.author,
+            "prototype": __version__, "author": self.author,
             "access_mode": "paths" if self.dynamic else "legacy_folder",
             "read_paths": [str(p) for p in self.read_paths],
             "project_folder": str(self.project) if self.project else None,
