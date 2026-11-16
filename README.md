@@ -46,6 +46,14 @@ enabled, or Codex CLI/IDE, download and unzip the
 to a permanent folder and install [uv](https://docs.astral.sh/uv/getting-started/installation/).
 Add a local STDIO server using this command (replace the folder and your name):
 
+Before adding the connection, prepare the runtime once in Terminal:
+
+```sh
+uv sync --frozen --no-dev --project /absolute/path/to/veqtor-workspace
+```
+
+Then use this launch command:
+
 ```sh
 uv run --frozen --no-dev --project /absolute/path/to/veqtor-workspace veqtor-workspace \
   --author 'Your Name'
@@ -56,6 +64,10 @@ client. An optional `--python /absolute/path/to/python` selects a different docu
 runtime with the required libraries. `uv run` provisions the default environment.
 This command does not change other client connections. Local STDIO connections
 require a desktop/local client; this is not a remote server for ChatGPT in a browser.
+For ChatGPT Desktop/Codex, set `startup_timeout_sec = 180` and
+`tool_timeout_sec = 330` in this server's section of `~/.codex/config.toml`.
+These allow the local connection to start and document calls to finish within
+Veqtor's 270-second ceiling. See the [official connection settings](https://learn.chatgpt.com/docs/extend/mcp).
 
 ## How the workspace works
 
