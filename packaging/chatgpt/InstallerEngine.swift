@@ -104,6 +104,7 @@ final class InstallerEngine: @unchecked Sendable {
         let expected = sha256(existing)
         guard let metadata = try JSONSerialization.jsonObject(with: Data(contentsOf: resources.appendingPathComponent("release.json"))) as? [String: String],
               let version = metadata["version"], version.range(of: "^[0-9]+\\.[0-9]+\\.[0-9]+$", options: .regularExpression) != nil,
+              let pythonVersion = metadata["python_version"], pythonVersion.range(of: "^3\\.[0-9]+\\.[0-9]+$", options: .regularExpression) != nil,
               let payloadHash = metadata["payload_sha256"] else {
             throw InstallerError(message: "The installer is incomplete. Download it again from veqtor.pro.")
         }
@@ -128,7 +129,7 @@ final class InstallerEngine: @unchecked Sendable {
         }
         progress("Downloading the required components…")
         _ = try run(resources.deletingLastPathComponent().appendingPathComponent("Helpers/uv"),
-                    ["sync", "--frozen", "--no-dev", "--group", "installer", "--no-install-project", "--no-build",
+                    ["sync", "--python", pythonVersion, "--frozen", "--no-dev", "--group", "installer", "--no-install-project", "--no-build",
                      "--directory", runtime.path], environment: environment)
         let python = runtime.appendingPathComponent(".venv/bin/python3")
         progress("Checking the connection…")

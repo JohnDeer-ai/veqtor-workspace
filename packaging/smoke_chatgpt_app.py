@@ -18,7 +18,8 @@ from smoke_mcpb import exercise_documents
 
 def verify(app: Path, driver: Path):
     resources = app / "Contents/Resources"
-    version = json.loads((resources / "release.json").read_text())["version"]
+    metadata = json.loads((resources / "release.json").read_text())
+    version = metadata["version"]
     with tempfile.TemporaryDirectory(prefix="veqtor-chatgpt-test-") as temporary:
         root = Path(temporary).resolve()
         profile = root / "profile with spaces"
@@ -30,6 +31,8 @@ def verify(app: Path, driver: Path):
         assert entry["command"] == str(runtime / ".venv/bin/python3")
         assert entry["args"] == ["-I", str(runtime / "veqtor-launch.py"), "--author", "Installer Test"]
         assert entry["startup_timeout_sec"] == 180 and entry["tool_timeout_sec"] == 330
+        python_version = subprocess.check_output([entry["command"], "--version"], text=True).strip()
+        assert python_version == "Python " + metadata["python_version"]
         managed = profile / "Library/Application Support/Veqtor Workspace/ChatGPT/python"
         assert any(managed.glob("cpython-*")), "The installer did not prepare its own Python"
         params = StdioServerParameters(command=entry["command"],

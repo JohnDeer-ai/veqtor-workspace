@@ -77,6 +77,7 @@ def build(out: Path) -> Path:
     )
     (resources / "release.json").write_text(json.dumps({"version": version,
         "payload_sha256": hashlib.sha256(payload.read_bytes()).hexdigest(),
+        "python_version": (ROOT / ".python-version").read_text().strip(),
         "uv_version": UV_VERSION, "uv_archive_sha256": UV_SHA256}, indent=2) + "\n")
     (app / "Contents/Info.plist").write_bytes(plistlib.dumps({
         "CFBundleName": "Veqtor Workspace Setup", "CFBundleDisplayName": "Veqtor Workspace Setup",
