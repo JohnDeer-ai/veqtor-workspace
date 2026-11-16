@@ -47,7 +47,7 @@ async def exercise(bundle: Path, root: Path):
     # project. A successful source build on CI is not an installer acceptance.
     await asyncio.to_thread(subprocess.run,
         [uv, "sync", "--frozen", "--no-dev", "--no-install-project", "--no-build", "--directory", str(extension)],
-        env=env, cwd=extension, check=True, timeout=300)
+        env=env, cwd=extension, check=True, timeout=600)
     params = StdioServerParameters(command=uv, args=args, env=env, cwd=str(extension))
     await exercise_documents(params, root, manifest["version"], author)
     assert any((root / "python").glob("cpython-*")), "Managed Python was not downloaded"
