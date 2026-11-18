@@ -112,35 +112,37 @@ def build_server(workspace: Workspace) -> MCPServer:
                    preview_timeout_seconds: float = min(60, workspace.call_timeout_seconds), preview_id: str | None = None,
                    preview_pages: list[int] | None = None,
                    preview_side: Literal["original", "candidate"] = "candidate",
+                   preview_view: Literal["markup", "proposed"] | None = None,
                    task_id: str | None = None, preview_query: str | None = None,
                    changes_start: int = 0) -> CallToolResult:
         """Optional DOCX diagnostics and LibreOffice preview; never a save gate or approval verdict.
 
         Use task_id for the task snapshot/result, or original/candidate in copy mode.
-        Compares text, formatting, revisions and comments after undoing inferred new edits.
-        This assumes additive tracked edits: accepting revisions, deleting comments or a clean
-        copy can legitimately produce observations. Interpret findings against the request;
-        do not rewrite correct content to clear them. errors means unreadable package/XML.
+        Compares text, formatting, revisions and comments against additive tracked edits.
+        Accepting revisions, removing comments or a clean copy can produce expected observations.
+        Interpret them against the request; do not rewrite correct content to clear them.
+        errors means unreadable package/XML.
         Warnings include dates, placement and unnecessarily broad plain-text replacements.
         No automatic repair. This is not a complete difference report, legal check or Word test.
 
         changes returns five before/after excerpts; pass its next_start as changes_start for more.
-        Optional read_docx reads full passages/history. preview_guidance identifies nested
-        deletions that LibreOffice may display differently; native_word reports not checked.
+        preview_guidance locates nested deletions that LibreOffice may display differently.
 
         render=True renders both files once (shared deadline normally 60s, within the call ceiling).
         All pages are rendered; at most three images are returned per call. Reuse preview_id
         with preview_pages or preview_query to inspect more without rendering again.
-        preview_side selects candidate or original. Cached checks are reused only for unchanged files.
+        preview_side selects candidate or original. Cache requires unchanged files.
+        preview_view="proposed" hides all pending markup in a temporary display copy; default is "markup".
+        It does not accept revisions or certify Word behavior. A different view needs a new render.
         Page numbers belong to this preview, not Word. changed_pages includes pagination shifts.
-        Give clause/text locations too. A successful render does not mean images were reviewed.
+        Give clause/text locations too. Rendering does not mean images were reviewed.
         Report structural checks, visual review, Word opening and Word accept/reject separately.
-        See workspace_info's optional reference for details. No automatic retry.
+        Details in workspace_info's reference. No automatic retry.
         """
         reply = await call("check_docx", {
             "original": original, "candidate": candidate, "render": render, "task_id": task_id,
             "preview_timeout_seconds": preview_timeout_seconds, "preview_id": preview_id,
-            "preview_pages": preview_pages, "preview_side": preview_side,
+            "preview_pages": preview_pages, "preview_side": preview_side, "preview_view": preview_view,
             "preview_query": preview_query, "changes_start": changes_start})
         result = reply.get("report", reply)
         images = [ImageContent(type="image", mimeType="image/png", data=data) for data in reply.get("images", [])]

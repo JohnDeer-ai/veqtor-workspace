@@ -195,7 +195,8 @@ def test_preview_protects_documents_and_mcp_returns_images(preview):
     assert original.read_bytes() == candidate.read_bytes() == before
 
 
-def test_mcp_later_pages_without_reconversion_and_stale_preview_rejected(tmp_path):
+@pytest.mark.parametrize("view", ["markup", "proposed"])
+def test_mcp_later_pages_without_reconversion_and_stale_preview_rejected(tmp_path, view):
     inputs, work = tmp_path / "inputs", tmp_path / "work"
     inputs.mkdir()
     work.mkdir()
@@ -218,9 +219,11 @@ def test_mcp_later_pages_without_reconversion_and_stale_preview_rejected(tmp_pat
             env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1])})
         async with Client(stdio_client(params)) as client:
             paths = {"original": "inputs/source.docx", "candidate": "work/result.docx"}
-            initial = await client.call_tool("check_docx", {**paths, "render": True, "preview_timeout_seconds": 180})
+            initial = await client.call_tool("check_docx", {**paths, "render": True, "preview_timeout_seconds": 180,
+                                                           "preview_view": view})
             data = json.loads(initial.content[0].text)["preview"]
             assert data["status"] == "rendered", data
+            assert data["view"] == view
             assert data["files"]["candidate"]["pages"] == 7
             assert data["timeout_seconds"] == 180
             renderer.unlink()  # Later pages must not need the converter again.
@@ -230,10 +233,14 @@ def test_mcp_later_pages_without_reconversion_and_stale_preview_rejected(tmp_pat
             assert json.loads(more.content[0].text)["check_reused"] is True
             assert "checks" not in json.loads(more.content[0].text)
             assert page_data["reused"] is True
+            assert page_data["view"] == view
             assert page_data["page_numbering"] == data["page_numbering"]
             assert "not Microsoft Word" in page_data["page_numbering"]
             assert page_data["shown_pages"] == [4, 5, 6]
             assert sum(c.type == "image" for c in more.content) == 3
+            wrong_view = await client.call_tool("check_docx", {
+                **paths, "preview_id": data["preview_id"], "preview_view": "markup" if view == "proposed" else "proposed"})
+            assert wrong_view.is_error and "different view" in wrong_view.content[0].text
             before = await client.call_tool("check_docx", {
                 **paths, "preview_id": data["preview_id"], "preview_pages": [7], "preview_side": "original"})
             assert json.loads(before.content[0].text)["preview"]["image_side"] == "original"

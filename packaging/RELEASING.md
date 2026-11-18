@@ -51,7 +51,7 @@ certificate cannot provide Developer ID signing for public distribution.
 
 ### Current unsigned download
 
-The v0.1.2 ChatGPT download is deliberately distributed **without Developer ID
+The v0.1.3 ChatGPT download is deliberately distributed **without Developer ID
 signing or Apple notarization**, with the publisher's explicit decision. Package it
 with the visible macOS permission instructions:
 

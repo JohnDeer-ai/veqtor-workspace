@@ -101,6 +101,22 @@ Pages belong to the preview, not Word pagination. Include clause numbers or text
 `changed_pages` includes shifts caused by pagination, not just edited clauses.
 Search has no OCR or cross-page phrase matching; no match does not prove absence from the DOCX.
 
+`preview_view="markup"` shows tracked changes (the default for a new render).
+`preview_view="proposed"` hides markup from **all pending rounds**, including older authors,
+using display settings in a disposable copy. No revisions are accepted and the working file
+is unchanged. LibreOffice still interprets the document; this is not native Word verification.
+Each view has its own `preview_id` and pagination. Omit `preview_view` when reusing that ID,
+or repeat the same view; switching views requires `render=True` without an old ID.
+
+Each rendered file's `fonts` reports names observed in PDF text. `possible_substitutions`
+matches unique directly formatted passages; font aliases can differ. `declared_but_not_seen`
+can include unused styles/history, not just substitutions. Theme/style inheritance and
+installed-font availability are not verified. These are clues, not a fidelity verdict:
+inspect a suspicious fragment before changing document layout. No fonts are changed.
+With python-docx, a font size or spacing of `None` means no direct value: inspect the
+character/paragraph style, its base styles and document defaults before treating it as missing.
+Settings observations name changed settings and stored values; `null` means absent, not disabled.
+
 Inspect relevant output to the extent needed for the task. Preview is optional and may time out.
 `preview_guidance` locates nested deletions in the candidate and shows proposed text for up
 to five affected paragraphs (new/changed passages first; 900 characters each, explicitly marked if incomplete).

@@ -64,6 +64,33 @@ def test_checker_resource_limit_is_not_document_damage(tmp_path):
     assert report["summary"]["not_checked"] == ["docx_preservation"]
 
 
+def test_settings_observation_names_stored_values_without_guessing_defaults(tmp_path):
+    before = f'<w:settings {NS}><w:zoom w:percent="100"/><w:proofState w:spelling="dirty"/></w:settings>'
+    after = (f'<w:settings {NS}><w:zoom w:percent="120"/>'
+             '<w:revisionView w:markup="1" w:comments="1"/><w:trackRevisions/></w:settings>')
+    _, report = check(tmp_path, [para(run('Unchanged'))], [para(run('Unchanged'))],
+                      {'word/settings.xml': before}, {'word/settings.xml': after})
+    package = next(c for c in report['checks'] if c['check'] == 'package_parts')
+    issue = next(i for i in package['detail']['issues'] if i.get('part') == 'word/settings.xml')
+    values = {s['setting']: s for s in issue['settings']}
+    assert set(values) == {'zoom', 'proofState', 'revisionView'}
+    assert values['zoom']['before'][0]['attributes'] == {'percent': '100'}
+    assert values['zoom']['after'][0]['attributes'] == {'percent': '120'}
+    assert values['revisionView']['before'] is None
+    assert values['proofState']['after'] is None
+    assert 'not false' in issue['scope']
+
+
+def test_nested_setting_changes_remain_visible(tmp_path):
+    before = f'<w:settings {NS}><w:compat><w:compatSetting w:name="compatibilityMode" w:val="14"/></w:compat></w:settings>'
+    after = before.replace('w:val="14"', 'w:val="15"')
+    failed, report = check(tmp_path, [para(run('Unchanged'))], [para(run('Unchanged'))],
+                           {'word/settings.xml': before}, {'word/settings.xml': after})
+    assert 'package_parts' in failed
+    package = next(c for c in report['checks'] if c['check'] == 'package_parts')
+    assert 'compatibilityMode' in str(package['detail']) and "'15'" in str(package['detail'])
+
+
 CELL = '<w:tcPr><w:tcW w:w="100" w:type="dxa"/>{change}</w:tcPr>'
 TABLE = '<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/></w:tblPr><w:tblGrid><w:gridCol w:w="100"/></w:tblGrid>{rows}</w:tbl>'
 ROW = "<w:tr><w:tc>" + CELL.format(change="") + para(run("Kept")) + "</w:tc></w:tr>"

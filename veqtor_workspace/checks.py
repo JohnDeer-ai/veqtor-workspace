@@ -569,6 +569,40 @@ def _other_children(root, skipped):
     return Counter(_sig(c) for c in root if isinstance(c.tag, str) and c.tag not in skipped)
 
 
+def _settings_changes(before, after):
+    """Report stored values, without guessing Word defaults or judging intent."""
+    def name(tag):
+        return _short(tag) if tag.startswith(W) else tag
+
+    def value(element, depth=0):
+        result = {"attributes": {name(k): v for k, v in element.attrib.items()}}
+        if element.text and element.text.strip():
+            result["text"] = element.text[:200]
+            if len(element.text) > 200:
+                result["text_truncated"] = True
+        children = [c for c in element if isinstance(c.tag, str)]
+        if children:
+            result["child_count"] = len(children)
+            if depth < 2:
+                result["children"] = [{"setting": name(c.tag), **value(c, depth + 1)} for c in children[:5]]
+            if depth >= 2 or len(children) > 5:
+                result["children_truncated"] = True
+        return result
+
+    tags = sorted({e.tag for root in (before, after) for e in root if isinstance(e.tag, str)}
+                  - {W + "rsids", W + "trackRevisions"})
+    changed = []
+    for tag in tags:
+        left, right = before.findall(tag), after.findall(tag)
+        if Counter(map(_sig, left)) == Counter(map(_sig, right)):
+            continue
+        changed.append({"setting": name(tag),
+                        "before": [value(e) for e in left[:5]] or None,
+                        "after": [value(e) for e in right[:5]] or None,
+                        **({"entries_truncated": True} if max(len(left), len(right)) > 5 else {})})
+    return changed
+
+
 def _package_issues(before, after, left, right):
     issues, metadata = [], []
     removed = sorted(set(before) - set(after))
@@ -596,10 +630,12 @@ def _package_issues(before, after, left, right):
                 issues.append({"issue": "existing styles changed (new styles are allowed)", "part": name,
                                "styles": changed[:20], "repeated_ids": repeated[:20]})
         elif name == "word/settings.xml":
-            skipped = {W + "rsids", W + "trackRevisions"}
-            if _other_children(a, skipped) != _other_children(b, skipped):
-                issues.append({"issue": "settings changed beyond revision ids and the track-changes switch",
-                               "part": name})
+            changed = _settings_changes(a, b)
+            if changed:
+                issues.append({"issue": "document settings changed", "part": name,
+                               "settings": changed[:20], "changed_setting_count": len(changed),
+                               "scope": "Stored values only; null means not specified, not false. "
+                                        "Revision ids and the track-changes switch are excluded."})
         elif name.startswith("word/") and _sig(a) != _sig(b):
             issues.append({"issue": "content changed", "part": name})
         elif not name.startswith("word/") and ET.tostring(a, method="c14n") != ET.tostring(b, method="c14n"):

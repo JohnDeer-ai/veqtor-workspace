@@ -3,7 +3,7 @@
   "manifest_version": "0.4",
   "name": "veqtor-workspace-pilot",
   "display_name": "Veqtor Workspace",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Ask your AI assistant to read, edit and save your local documents.",
   "long_description": "For Macs with Apple Silicon (M1 or newer). Point to a saved Word file and describe what you want changed. Ask for tracked changes, comments or a clean copy. Include other documents for context. Veqtor edits a protected working copy and saves to the original file after checking for saved-file conflicts, or to a new file. Save your Word changes before starting. Veqtor runs locally; content read by your assistant is processed by your AI service.",
   "author": {
