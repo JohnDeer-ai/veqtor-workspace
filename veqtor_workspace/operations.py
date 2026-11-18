@@ -157,6 +157,11 @@ def perform(w: Workspace, operation: str, args: dict) -> dict:
         raise ValueError("Provide task_id or both original and candidate paths.")
     source, target = context.path(original, "inputs"), context.path(candidate, "work")
     render, preview_id, pages = args["render"], args["preview_id"], args["preview_pages"]
+    view = args.get("preview_view")
+    if view is not None and view not in ("markup", "proposed"):
+        raise ValueError("preview_view must be markup or proposed.")
+    if view is not None and not (render or preview_id):
+        raise ValueError("Use render=True or preview_id with preview_view.")
     seconds = args["preview_timeout_seconds"]
     if render and (not math.isfinite(seconds) or not 0 < seconds <= w.call_timeout_seconds):
         raise ValueError("The preview deadline must be positive and within the connection's call limit.")
@@ -172,7 +177,7 @@ def perform(w: Workspace, operation: str, args: dict) -> dict:
     # Validate the protected preview's hashes BEFORE reading its cached check.
     # Legacy previews and other checker versions are checked once again.
     if preview_id:
-        preview = read_preview(w.root / ".runs/previews", preview_id, source, target)
+        preview = read_preview(w.root / ".runs/previews", preview_id, source, target, view)
         receipt = Path(preview["directory"]) / "check.json"
         try:
             cached = json.loads(receipt.read_text())
@@ -189,7 +194,7 @@ def perform(w: Workspace, operation: str, args: dict) -> dict:
         preview_root = w.root / ".runs/previews"
         if preview is None:
             preview = render_pair(source, target, preview_root, w.preview_config, seconds,
-                                  managed_process_group=w.managed_process_group)
+                                  managed_process_group=w.managed_process_group, view=view or "markup")
         if (preview["status"] == "rendered" and not reused_check
                 and result.get("original_sha256") == preview["files"]["original"]["sha256"]
                 and result.get("candidate_sha256") == preview["files"]["candidate"]["sha256"]):

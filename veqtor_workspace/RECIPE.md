@@ -34,6 +34,7 @@ There is no fixed catalog of document operations. Helpers and diagnostics are op
 Save manual Word edits before starting; unsaved edits are invisible. Avoid simultaneous
 Word edits, and reopen an already open document after an in-place model save.
 Use `atomic_save` from `veqtor_workspace.files` for safe candidate writes when useful.
+Optional `veqtor_workspace.text_edits.minimal_edits` plans precise text replacements; see the reference for examples.
 Read `workspace_info.limits` for execution limits; there is no network access.
 Optional examples for reading, precise edits, Word markup and preview are in the
 `reference` file returned by `workspace_info`. Read only when needed.

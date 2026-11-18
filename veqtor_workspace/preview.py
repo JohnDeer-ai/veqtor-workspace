@@ -17,6 +17,9 @@ import subprocess
 import time
 import uuid
 from pathlib import Path
+from zipfile import BadZipFile, ZipFile
+
+from lxml import etree as ET
 
 from veqtor_workspace.files import atomic_save
 
@@ -24,6 +27,33 @@ DEFAULT_SECONDS = 60
 MAX_IMAGES = 3
 PAGE_NUMBERING = "Preview pages (1-based), not Microsoft Word page numbers; pagination may differ."
 CHANGE_MEANING = "Pages with visual differences, including pagination shifts; not a list of edited clauses."
+VIEWS = {
+    "markup": "With tracked changes (LibreOffice)",
+    "proposed": "Proposed text, all pending rounds (LibreOffice; revisions are only hidden, not accepted)",
+}
+
+
+def display_copy(source: Path, destination: Path, view: str) -> None:
+    """Set only the display switches in a disposable copy; never resolve revisions."""
+    from veqtor_workspace.checks import W
+
+    if view not in VIEWS:
+        raise ValueError("preview_view must be markup or proposed.")
+    with ZipFile(source) as archive, ZipFile(destination, "w") as output:
+        if view == "proposed" and "word/settings.xml" not in archive.namelist():
+            raise ValueError("Preview view needs word/settings.xml; the source is unchanged.")
+        for member in archive.infolist():
+            data = archive.read(member)
+            if member.filename == "word/settings.xml":
+                settings = ET.fromstring(data, ET.XMLParser(resolve_entities=False, no_network=True))
+                revision_view = settings.find(W + "revisionView")
+                if revision_view is None:
+                    revision_view = ET.Element(W + "revisionView")
+                    settings.insert(0, revision_view)
+                for attribute in ("markup", "insDel", "formatting", "comments"):
+                    revision_view.set(W + attribute, "1" if view == "markup" else "0")
+                data = ET.tostring(settings, xml_declaration=True, encoding="UTF-8", standalone=True)
+            output.writestr(member, data)
 
 
 def renderer_info(config: Path) -> dict:
@@ -113,7 +143,7 @@ def select_pages(result: dict, pages: list[int] | None = None, side: str = "cand
             "unshown_changed_pages": [n for n in result["changed_pages"] if n not in pages]}
 
 
-def read_preview(root: Path, preview_id: str, original: Path, candidate: Path) -> dict:
+def read_preview(root: Path, preview_id: str, original: Path, candidate: Path, view: str | None = None) -> dict:
     """Reuse a protected preview only while it still matches both documents."""
     if not re.fullmatch(r"[0-9a-f]{12}", preview_id):
         raise ValueError("Invalid preview_id.")
@@ -123,6 +153,8 @@ def read_preview(root: Path, preview_id: str, original: Path, candidate: Path) -
     result = json.loads(receipt.read_text())
     if result["status"] != "rendered" or Path(result["directory"]).resolve() != receipt.parent:
         raise ValueError("Preview is not a completed render.")
+    if view is not None and view != result.get("view"):
+        raise ValueError("This preview has a different view. Use render=True without preview_id to change it.")
     for name, path in (("original", original), ("candidate", candidate)):
         if hashlib.sha256(path.read_bytes()).hexdigest() != result["files"][name]["sha256"]:
             raise ValueError(f"The {name} changed since this preview; render the current documents again.")
@@ -130,11 +162,15 @@ def read_preview(root: Path, preview_id: str, original: Path, candidate: Path) -
 
 
 def render_pair(original: Path, candidate: Path, output: Path, config: Path,
-                timeout_seconds: float = DEFAULT_SECONDS, managed_process_group: bool = False) -> dict:
+                timeout_seconds: float = DEFAULT_SECONDS, managed_process_group: bool = False,
+                view: str = "markup") -> dict:
     """Render both files once, sharing one deadline; return evidence, not visual approval."""
     if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
         raise ValueError("Preview timeout must be positive and finite.")
+    if view not in VIEWS:
+        raise ValueError("preview_view must be markup or proposed.")
     result = {"status": "not_available", "timeout_seconds": timeout_seconds, "page_numbering": PAGE_NUMBERING,
+              "view": view, "view_label": VIEWS[view],
               "visual_review": "not_performed", "images": [],
               "limits": "LibreOffice preview, not native Word. Nested revisions may display differently; "
                         "review complex history in Word. Comments and accept/reject are not tested."}
@@ -159,8 +195,10 @@ def render_pair(original: Path, candidate: Path, output: Path, config: Path,
         for name, source in (("original", original), ("candidate", candidate)):
             target = directory / name
             source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+            render_source = directory / f"{name}.docx"
+            display_copy(source, render_source, view)
             command = ["/usr/bin/sandbox-exec", "-p", profile, str(python), str(script),
-                       str(source.resolve()), "--output_dir", str(target), "--emit_pdf"]
+                       str(render_source), "--output_dir", str(target), "--emit_pdf"]
             remaining = timeout_seconds - (time.monotonic() - started)
             if remaining <= 0:
                 raise subprocess.TimeoutExpired(command, timeout_seconds)
@@ -187,6 +225,9 @@ def render_pair(original: Path, candidate: Path, output: Path, config: Path,
             if hashlib.sha256(source.read_bytes()).hexdigest() != source_hash:
                 raise RuntimeError(f"{name} changed during rendering; preview does not verify the current file.")
             result["files"][name] = {"sha256": source_hash, "pages": len(pages), "directory": str(target)}
+            from veqtor_workspace.preview_fonts import font_report
+
+            result["files"][name]["fonts"] = font_report(render_source, target)
         before, after = (result["files"][key]["pages"] for key in ("original", "candidate"))
         changed = []
         for number in range(1, max(before, after) + 1):
@@ -198,7 +239,7 @@ def render_pair(original: Path, candidate: Path, output: Path, config: Path,
         result = select_pages(result)
     except subprocess.TimeoutExpired:
         result.update(status="timed_out", detail="Shared preview deadline reached; converter processes stopped. No retry.")
-    except (OSError, ValueError, RuntimeError) as exc:
+    except (OSError, ValueError, RuntimeError, BadZipFile) as exc:
         result.update(status="failed", detail=str(exc))
     result["elapsed_seconds"] = round(time.monotonic() - started, 3)
     if result["status"] == "rendered":
@@ -213,8 +254,9 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--timeout", type=float, default=DEFAULT_SECONDS)
+    parser.add_argument("--view", choices=VIEWS, default="markup")
     args = parser.parse_args()
-    print(json.dumps(render_pair(args.original, args.candidate, args.output, args.config, args.timeout), indent=2))
+    print(json.dumps(render_pair(args.original, args.candidate, args.output, args.config, args.timeout, view=args.view), indent=2))
 
 
 if __name__ == "__main__":
