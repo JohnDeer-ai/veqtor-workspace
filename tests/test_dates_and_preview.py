@@ -5,12 +5,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+from lxml import etree as ET
 from test_checks import ME, OTHER, anchored, check, comments, docx, para, rev, run
 from test_reading import read_all
 
 from veqtor_workspace import checks, runner
 from veqtor_workspace.checks import check_docx
 from veqtor_workspace.reading import NESTED_DELETION_WARNING
+from veqtor_workspace.text_edits import REVISION_DATE_UTC, stamp_revision_time
 
 
 class Clock(datetime):
@@ -29,16 +31,60 @@ def clock(monkeypatch):
     return Clock
 
 
-def test_python_gets_fresh_utc_per_call(project, clock):
+def test_python_gets_fresh_host_time_and_utc_per_call(project, clock):
     workspace, _ = project
-    code = "import os; print(os.environ['VEQTOR_AUTHOR'], os.environ['VEQTOR_UTC_NOW'])"
+    code = "import os; print(os.environ['VEQTOR_AUTHOR'], os.environ['VEQTOR_UTC_NOW'], os.environ['VEQTOR_LOCAL_NOW'])"
     first = workspace.run(code)
     assert first['exit_code'] == 0, first
-    assert first['stdout'] == 'Ilya 2026-11-14T12:00:00Z\n'
+    assert first['stdout'].split() == ['Ilya', '2026-11-14T12:00:00Z', clock.instant.astimezone().isoformat()]
     clock.instant = datetime(2026, 11, 14, 12, 4, tzinfo=timezone.utc)
     second = workspace.run(code)
     assert second['exit_code'] == 0, second
-    assert second['stdout'] == 'Ilya 2026-11-14T12:04:00Z\n'
+    assert second['stdout'].split() == ['Ilya', '2026-11-14T12:04:00Z', clock.instant.astimezone().isoformat()]
+
+
+@pytest.mark.parametrize('local,utc', [
+    ('2026-11-14T01:57:27+03:00', '2026-11-13T22:57:27Z'),
+    ('2026-11-13T22:15:00-03:30', '2026-11-14T01:45:00Z'),
+])
+def test_revision_stamp_sets_local_clock_and_utc(tmp_path, clock, monkeypatch, local, utc):
+    monkeypatch.setenv('VEQTOR_LOCAL_NOW', local)
+    w = checks.W
+    original = run("Clause") + rev("ins", "1", OTHER, run(" earlier"), date="2020-01-01T10:00:00Z")
+    p = ET.fromstring(f'<w:p xmlns:w="{w[1:-1]}">{original}{rev("ins", "2", ME, run(" added"))}</w:p>')
+    earlier, inserted = p.findall(w + 'ins')
+    before = dict(earlier.attrib)
+    stamp_revision_time(inserted)
+    saved = ET.fromstring(ET.tostring(p)).findall(w + 'ins')
+    assert dict(saved[0].attrib) == before
+    assert saved[1].get(w + 'date') == local[:19]
+    assert saved[1].get(REVISION_DATE_UTC) == utc
+    ignorable = saved[1].get('{http://schemas.openxmlformats.org/markup-compatibility/2006}Ignorable')
+    assert any(saved[1].nsmap[prefix] == ET.QName(REVISION_DATE_UTC).namespace for prefix in ignorable.split())
+    findings, report = check(tmp_path, [para(original)], [ET.tostring(p, encoding='unicode')])
+    assert not findings and not report['summary']['warnings']
+
+
+@pytest.mark.parametrize('display,utc,reason', [
+    ('2026-11-14T20:43:00Z', '2026-11-14T17:43:00Z', None),
+    ('2026-11-14T14:43:00Z', '2026-11-14T17:49:00Z', 'future'),
+    ('2026-11-14T20:43:00Z', '2026-11-14T20:43:00+03:00', 'must use UTC'),
+    ('2026-11-14T20:43:00Z', 'invalid', 'Invalid dateUtc'),
+    ('2026-11-14T20:43:00+03:75', '2026-11-14T17:43:00Z', 'valid explicit timezone'),
+    ('2099-11-14T20:43:00Z', '2026-11-14T17:43:00Z', 'more than a day'),
+])
+def test_word_revision_date_uses_utc_companion(tmp_path, clock, display, utc, reason):
+    clock.instant = datetime(2026, 11, 14, 17, 43, tzinfo=timezone.utc)
+    attrs = f'xmlns:du="{ET.QName(REVISION_DATE_UTC).namespace}" du:dateUtc="{utc}"'
+    inserted = rev('ins', '1', ME, run(' added'), date=display).replace('<w:ins ', f'<w:ins {attrs} ', 1)
+    _, report = check(tmp_path, [para(run('Clause'))], [para(run('Clause'), inserted)])
+    dates = next(c for c in report['checks'] if c['check'] == 'new_revision_dates')
+    if reason is None:
+        assert dates['status'] == 'passed', dates
+    else:
+        assert dates['status'] == 'warning', dates
+        issue, = dates['detail']['issues']
+        assert issue['date'] == display and issue['dateUtc'] == utc and reason in issue['issue']
 
 
 @pytest.mark.parametrize('date,reason', [

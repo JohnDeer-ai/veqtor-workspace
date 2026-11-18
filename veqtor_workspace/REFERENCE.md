@@ -48,12 +48,14 @@ structuredContent keeps raw stdout/stderr and continuation text unchanged for pr
 Assigning `paragraph.text` to an existing redlined paragraph can erase history and formatting.
 These examples apply when choosing direct XML editing; another valid implementation is allowed.
 
-New revisions/comments can use the configured author (`os.environ["VEQTOR_AUTHOR"]`) and
-`os.environ["VEQTOR_UTC_NOW"]`, supplied afresh for each Python call, plus fresh unique ids.
-Do not label local time with Z; a deliberately specified date remains your choice.
-Diagnostics warn about missing/invalid dates, absent timezones and dates over five minutes
-ahead of `checked_at_utc`, only for new revisions/comments. They do not rewrite dates or gate saving.
-Timezone spelling must be `Z` or `+/-HH:MM`, with minutes 00–59 and a maximum offset of 14:00.
+Use the configured author (`os.environ["VEQTOR_AUTHOR"]`) and fresh unique ids.
+After attaching a new revision to the document, optionally call
+`veqtor_workspace.text_edits.stamp_revision_time(element)`. It uses the Mac time and offset
+supplied as `VEQTOR_LOCAL_NOW` for each Python call, writing local clock time in `w:date`
+and the UTC instant in `w16du:dateUtc`. `VEQTOR_UTC_NOW` is available for comments.
+For new revisions with a UTC companion, diagnostics use it to flag instants more than five minutes
+ahead of `checked_at_utc`. Other revision dates and comment dates require an explicit timezone
+(`Z` or `+/-HH:MM`, with minutes 00–59 and a maximum offset of 14:00).
 Preserve unrelated earlier text, authors, dates and history.
 When splitting runs, preserve mixed formatting and use `xml:space="preserve"` on text pieces
 with leading/trailing spaces. Word otherwise drops those spaces.
@@ -79,8 +81,10 @@ comment removal intentionally change the baseline history.
 
 ## Optional diagnostics and preview
 
-`check_docx(task_id=...)` compares the snapshot with the result. The existing comparison
-assumes additive tracked edits: it identifies and undoes new revisions/comments, then compares.
+`check_docx(task_id=...)` compares the snapshot with the result. In path mode,
+`check_docx(original="/received/file.docx", candidate="/draft/file.docx")` reads the two selected files.
+Relative `inputs/...` and `work/...` paths are also supported. `comparison` identifies the file pair.
+The diagnostics assume additive tracked edits: they identify and undo new revisions/comments, then compare.
 It is not a complete difference report and cannot always separate old/new revisions sharing
 metadata. `observations` may describe requested changes or uncertain history; interpret them
 against the user's task. `errors` means the comparison could not read the package/XML;
@@ -88,15 +92,16 @@ inspect the reason before concluding either file is damaged. Warnings and unchec
 remain explicit. Neither calling this tool nor clearing its observations is required to save.
 Do not dismiss a concrete unexpected loss just because the diagnostic is optional.
 
-`changes` contains five before/after paragraph excerpts from this task. Follow `next_start`
-using `changes_start` for more; this does not reconstruct past rounds. The optional
+`changes` lists five before/after paragraph excerpts and their addresses before the preview pages.
+Pass `next_start` as `changes_start` for more excerpts. The optional
 `redline_quality` observation covers only simple adjacent replacements, not all possible edits.
 
 `check_docx(task_id=..., render=True)` renders both copies with a shared deadline (60 seconds
 by default; set `preview_timeout_seconds` within the connection ceiling when needed).
 All pages are rendered; at most three images are returned per reply. Reuse `preview_id`
 with `preview_pages=[...]` or `preview_query="distinctive phrase"`; `preview_side="original"`
-selects the baseline. The cache is only reused for unchanged bytes. Re-render after later edits.
+selects the baseline. Preview reuse checks the selected paths and bytes. Re-render after later edits
+or when a path-mode preview predates path recording.
 Pages belong to the preview, not Word pagination. Include clause numbers or text as locators.
 `changed_pages` includes shifts caused by pagination, not just edited clauses.
 Search has no OCR or cross-page phrase matching; no match does not prove absence from the DOCX.

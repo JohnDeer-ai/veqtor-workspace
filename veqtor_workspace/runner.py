@@ -94,6 +94,22 @@ class Workspace:
             raise ValueError(f"Path must be inside {area}/.")
         return path
 
+    def comparison_path(self, selected: str, area: str) -> Path:
+        path = Path(selected).expanduser()
+        if not self.dynamic or not path.is_absolute():
+            return self.path(selected, area)
+        resolved = path.resolve(strict=True)
+        if not resolved.is_file():
+            raise ValueError(f"Select a regular DOCX file: {selected}")
+        # samefile also recognizes alternate spelling on case-insensitive volumes.
+        public = self.root / area
+        for parent in resolved.parents:
+            if parent.samefile(public):
+                break
+            if parent.samefile(self.private_root):
+                raise ValueError("Select files outside private state, or use task_id for a task comparison.")
+        return resolved
+
     def info(self) -> dict:
         return {
             "prototype": __version__, "author": self.author,
@@ -189,12 +205,14 @@ class Workspace:
         stem = self.root / ".runs" / run_id
         script = stem.with_suffix(".py")
         script.write_text(code, encoding="utf-8")
+        now = datetime.now(timezone.utc)
         env = {
             "PATH": "/usr/bin:/bin", "LANG": "en_US.UTF-8", "PYTHONUTF8": "1",
             "PYTHONDONTWRITEBYTECODE": "1", "PYTHONPATH": str(self.package),
             "HOME": str(self.root / "work/.home"), "TMPDIR": str(self.root / "work/.tmp"),
             "VEQTOR_AUTHOR": self.author,
-            "VEQTOR_UTC_NOW": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+            "VEQTOR_UTC_NOW": now.isoformat(timespec="seconds").replace("+00:00", "Z"),
+            "VEQTOR_LOCAL_NOW": now.astimezone().isoformat(timespec="seconds"),
         }
         bootstrap = f"import runpy; runpy.run_path({str(script)!r},run_name='__main__')"
         timed_out = False

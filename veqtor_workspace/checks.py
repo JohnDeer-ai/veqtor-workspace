@@ -11,16 +11,18 @@ from __future__ import annotations
 
 import difflib
 import hashlib
+import os
 import re
 from collections import Counter
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import BinaryIO
 from zipfile import BadZipFile, ZipFile
 
 from lxml import etree as ET
 
-from veqtor_workspace.text_edits import TOKEN
+from veqtor_workspace.text_edits import REVISION_DATE_UTC, TOKEN
 
 W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 W14 = "{http://schemas.microsoft.com/office/word/2010/wordml}"
@@ -72,8 +74,8 @@ class CheckLimit(Exception):
     """A resource limit of this checker, not evidence of document damage."""
 
 
-def _package(path: Path) -> tuple[dict[str, bytes], dict[str, ET._Element]]:
-    with ZipFile(path) as archive:
+def _package(source: BinaryIO) -> tuple[dict[str, bytes], dict[str, ET._Element]]:
+    with ZipFile(source) as archive:
         infos = archive.infolist()
         if len(infos) > 5000 or sum(i.file_size for i in infos) > 64 * 1024 * 1024:
             raise CheckLimit("This checker supports up to 64 MiB expanded and 5,000 ZIP members. "
@@ -92,6 +94,20 @@ def _package(path: Path) -> tuple[dict[str, bytes], dict[str, ET._Element]]:
                 raise ValueError("Document type declarations are not supported by this checker.")
             roots[name] = root
     return parts, roots
+
+
+def _package_with_hash(path: Path):
+    with path.open("rb") as source:
+        before = os.fstat(source.fileno())
+        parts, roots = _package(source)
+        source.seek(0)
+        digest = hashlib.file_digest(source, "sha256").hexdigest()
+        after = os.fstat(source.fileno())
+        if (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
+            after.st_size, after.st_mtime_ns, after.st_ctime_ns
+        ):
+            raise OSError(f"DOCX changed during reading: {path}")
+    return parts, roots, digest
 
 
 def _is_story(name):
@@ -434,19 +450,48 @@ def _added_insertions(original, restored, keys):
     return proposed
 
 
-def _date_issue(value, checked_at):
-    """Advisory timestamp check; never normalize dates or infer a negotiation round."""
+def _parse_date(value, *, allow_local=False):
     if not value:
-        return "Missing date."
+        return None, "Missing date."
     try:
         stamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        # fromisoformat normalizes offsets such as +03:75 and accepts offsets beyond XML's range.
-        if "T" not in value or not re.search(r"(?:Z|[+-](?:(?:0[0-9]|1[0-3]):[0-5][0-9]|14:00))\Z", value):
-            return "Use a date and time with a valid explicit timezone: Z or +/-HH:MM, up to +/-14:00."
     except ValueError:
-        return "Invalid date/time."
+        return None, "Invalid date/time."
+    if allow_local and stamp.tzinfo is None and "T" in value:
+        return stamp, None
+    # fromisoformat normalizes offsets such as +03:75 and accepts offsets beyond XML's range.
+    if "T" not in value or not re.search(r"(?:Z|[+-](?:(?:0[0-9]|1[0-3]):[0-5][0-9]|14:00))\Z", value):
+        return None, "Use a date and time with a valid explicit timezone: Z or +/-HH:MM, up to +/-14:00."
+    return stamp, None
+
+
+def _future_date_issue(stamp, checked_at):
     if stamp > checked_at + timedelta(minutes=5):
         return "More than 5 minutes in the future at this check; verify the clock and timezone."
+    return None
+
+
+def _date_issue(value, checked_at):
+    stamp, issue = _parse_date(value)
+    return issue or _future_date_issue(stamp, checked_at)
+
+
+def _revision_date_issue(date, utc, checked_at):
+    if utc is None:
+        return _date_issue(date, checked_at)
+    instant, issue = _parse_date(utc)
+    if issue:
+        return f"Invalid dateUtc. {issue}"
+    if instant.utcoffset() != timedelta(0):
+        return "dateUtc must use UTC."
+    if issue := _future_date_issue(instant, checked_at):
+        return issue
+    display, issue = _parse_date(date, allow_local=True)
+    if issue:
+        return issue
+    # Compare clock digits loosely, since Word can write local digits with a Z suffix.
+    if abs(display.replace(tzinfo=None) - instant.replace(tzinfo=None)) > timedelta(days=1):
+        return "w:date and dateUtc differ by more than a day."
     return None
 
 
@@ -510,8 +555,12 @@ def _story(part, a, b, author, new_comment_ids, checked_at):
         if e.get(W + "author") != author:
             found["authors"].append({**where, "author": e.get(W + "author")})
         date = e.get(W + "date")
-        if issue := _date_issue(date, checked_at):
-            found["dates"].append({**where, "date": date, "issue": issue})
+        utc = e.get(REVISION_DATE_UTC)
+        if issue := _revision_date_issue(date, utc, checked_at):
+            finding = {**where, "date": date, "issue": issue}
+            if utc is not None:
+                finding["dateUtc"] = utc
+            found["dates"].append(finding)
         if e.tag in (W + "ins", W + "del") and e.getparent().tag not in (W + "rPr", W + "trPr"):
             outer = next(e.iterancestors(*TEXT_REVISIONS), None)
             inside = outer is not None and {
@@ -626,8 +675,8 @@ def check_docx(original: Path, candidate: Path, author: str, changes_start: int 
         checks.append(item)
 
     try:
-        before, left = _package(original)
-        after, right = _package(candidate)
+        before, left, original_hash = _package_with_hash(original)
+        after, right, candidate_hash = _package_with_hash(candidate)
     except CheckLimit as exc:
         return {**evidence, "status": "not_checked", "summary": {"errors": [], "observations": [], "warnings": [],
                 "not_checked": ["docx_preservation"]},
@@ -721,7 +770,7 @@ def check_docx(original: Path, candidate: Path, author: str, changes_start: int 
     return {**evidence, "status": "diagnostic",
             "summary": {"errors": [], "observations": group["observation"], "warnings": group["warning"], "not_checked": group["not_checked"]},
             "checks": checks, "changed_parts": changed,
-            "original_sha256": hashlib.sha256(original.read_bytes()).hexdigest(),
-            "candidate_sha256": hashlib.sha256(candidate.read_bytes()).hexdigest(),
+            "original_sha256": original_hash,
+            "candidate_sha256": candidate_hash,
             "changes": change_summary(left, right, changes_start),
             "preview_guidance": preview_guidance(right, left)}

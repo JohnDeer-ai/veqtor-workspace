@@ -22,6 +22,9 @@ from veqtor_workspace.runner import Workspace
 from veqtor_workspace.tasks import DocumentTasks
 
 
+CHECK_CACHE_FORMAT = 2
+
+
 async def _stop_worker(process):
     with anyio.CancelScope(shield=True):
         try:
@@ -147,15 +150,20 @@ def perform(w: Workspace, operation: str, args: dict) -> dict:
         raise ValueError("Unknown operation.")
 
     original, candidate, task_id = args["original"], args["candidate"], args["task_id"]
-    context = w
     if task_id:
         if original is not None or candidate is not None:
             raise ValueError("Use task_id or original/candidate paths, not both.")
         context, task = tasks.context(task_id)
-        original, candidate = task["original"], task["candidate"]
-    if original is None or candidate is None:
-        raise ValueError("Provide task_id or both original and candidate paths.")
-    source, target = context.path(original, "inputs"), context.path(candidate, "work")
+        source = context.path(task["original"], "inputs")
+        target = context.path(task["candidate"], "work")
+        comparison = {"mode": "task", "task_id": task_id, "task_file": task["file"]}
+    else:
+        if original is None or candidate is None:
+            raise ValueError("Provide task_id or both original and candidate paths.")
+        source = w.comparison_path(original, "inputs")
+        target = w.comparison_path(candidate, "work")
+        comparison = {"mode": "paths"}
+    comparison.update(original=str(source), candidate=str(target))
     render, preview_id, pages = args["render"], args["preview_id"], args["preview_pages"]
     seconds = args["preview_timeout_seconds"]
     if render and (not math.isfinite(seconds) or not 0 < seconds <= w.call_timeout_seconds):
@@ -169,15 +177,15 @@ def perform(w: Workspace, operation: str, args: dict) -> dict:
         raise ValueError("Provide render=True or preview_id for preview_query.")
     images, preview = [], None
     reused_check = False
-    # Validate the protected preview's hashes BEFORE reading its cached check.
-    # Legacy previews and other checker versions are checked once again.
+    # Validate the protected preview against the file pair before reading its cached check.
     if preview_id:
-        preview = read_preview(w.root / ".runs/previews", preview_id, source, target)
+        preview = read_preview(w.root / ".runs/previews", preview_id, source, target, require_paths=w.dynamic)
         receipt = Path(preview["directory"]) / "check.json"
         try:
             cached = json.loads(receipt.read_text())
             result = cached["report"]
-            reused_check = (cached["version"] == __version__ and cached["author"] == w.author
+            reused_check = (cached.get("format") == CHECK_CACHE_FORMAT
+                            and cached["version"] == __version__ and cached["author"] == w.author
                             and cached["changes_start"] == changes_start
                             and result["original_sha256"] == preview["files"]["original"]["sha256"]
                             and result["candidate_sha256"] == preview["files"]["candidate"]["sha256"])
@@ -190,19 +198,26 @@ def perform(w: Workspace, operation: str, args: dict) -> dict:
         if preview is None:
             preview = render_pair(source, target, preview_root, w.preview_config, seconds,
                                   managed_process_group=w.managed_process_group)
-        if (preview["status"] == "rendered" and not reused_check
-                and result.get("original_sha256") == preview["files"]["original"]["sha256"]
-                and result.get("candidate_sha256") == preview["files"]["candidate"]["sha256"]):
+        if preview["status"] == "rendered" and result["status"] == "diagnostic" and not reused_check:
+            if any(result[f"{name}_sha256"] != preview["files"][name]["sha256"]
+                   for name in ("original", "candidate")):
+                raise ValueError("A selected DOCX changed between comparison and preview. Compare the current files again.")
             with atomic_save(Path(preview["directory"]) / "check.json") as temporary:
-                temporary.write_text(json.dumps({"version": __version__, "author": w.author,
+                temporary.write_text(json.dumps({"format": CHECK_CACHE_FORMAT, "version": __version__, "author": w.author,
                                                  "changes_start": changes_start, "report": result}))
         if reused_check:
-            result = {key: result[key] for key in ("status", "summary", "original_sha256", "candidate_sha256",
-                                                  "checked_at_utc", "native_word", "preview_guidance")}
+            fields = ("status", "summary", "original_sha256", "candidate_sha256",
+                      "checked_at_utc", "native_word", "preview_guidance")
+            if changes_start:
+                fields += ("changes",)
+            result = {key: result[key] for key in fields}
             result["check_reused"] = True
         result["preview"] = select_pages(preview, pages, args["preview_side"], query)
         images = [base64.b64encode(Path(p).read_bytes()).decode() for p in result["preview"]["images"]]
-    return {"report": result, "images": images}
+    report = {"status": result["status"], "comparison": comparison, "summary": result["summary"]}
+    if "changes" in result:
+        report["changes"] = result["changes"]
+    return {"report": {**report, **result}, "images": images}
 
 
 def main():

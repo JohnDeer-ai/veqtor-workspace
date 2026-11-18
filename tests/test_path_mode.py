@@ -210,3 +210,80 @@ def test_shared_preview_works_in_two_unconfigured_folders(tmp_path):
                 assert sum(c.type == "image" for c in result.content) == 1
                 assert not (source.parent / ".preview.json").exists()
     asyncio.run(exercise())
+
+
+def test_explicit_docx_pair_changes_and_preview_keep_file_identity(tmp_path):
+    incoming, working = tmp_path / "получено", tmp_path / "our version"
+    incoming.mkdir()
+    working.mkdir()
+    original = docx(incoming / "example.docx", [para(run(f"Original clause {i}")) for i in range(1, 8)])
+    candidate = docx(working / "example.docx", [para(run(f"Candidate clause {i}")) for i in range(1, 8)])
+    before = original.read_bytes(), candidate.read_bytes()
+    renderer = tmp_path / "renderer.py"
+    renderer.write_text("import sys, base64\nfrom pathlib import Path\n"
+                        "out = Path(sys.argv[sys.argv.index('--output_dir') + 1])\nout.mkdir(parents=True)\n"
+                        f"for n in range(1, 8): (out / f'page-{{n}}.png').write_bytes(base64.b64decode({PNG!r}))\n")
+    config = tmp_path / "preview.json"
+    config.write_text(json.dumps({"python": sys.executable, "script": str(renderer)}))
+    state = tmp_path / "private state"
+
+    async def exercise():
+        params = StdioServerParameters(command=sys.executable, args=["-m", "veqtor_workspace.server",
+            "--state-dir", str(state), "--preview-config", str(config), "--author", "Ilya"],
+            env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1])})
+        async with Client(stdio_client(params)) as client:
+            paths = {"original": str(original), "candidate": str(candidate)}
+            result = await client.call_tool("check_docx", {**paths, "render": True})
+            assert not result.is_error, result
+            report = json.loads(result.content[0].text)
+            assert report["comparison"] == {"mode": "paths", **paths}
+            assert report["preview"]["status"] == "rendered"
+            assert list(report).index("changes") < list(report).index("preview")
+            assert report["changes"]["total"] == 7 and report["changes"]["next_start"] == 5
+            first = report["changes"]["items"][0]
+            assert first["before"]["id"] == first["after"]["id"] == "word/document.xml#p1"
+            assert first["before"]["text_excerpt"] == "Original clause 1"
+            assert first["after"]["text_excerpt"] == "Candidate clause 1"
+
+            request = {**paths, "preview_id": report["preview"]["preview_id"], "preview_pages": [7]}
+            reused = await call_tool(client, "check_docx", request)
+            assert reused["comparison"] == report["comparison"] and reused["check_reused"] is True
+            assert reused["preview"]["shown_pages"] == [7]
+            more = await call_tool(client, "check_docx", {**request, "changes_start": 5})
+            assert [entry["after"]["location"]["paragraph"] for entry in more["changes"]["items"]] == [6, 7]
+            assert more["changes"]["next_start"] is None
+            repeated = await call_tool(client, "check_docx", {**request, "changes_start": 5})
+            assert repeated["check_reused"] is True and repeated["changes"] == more["changes"]
+
+            (state / "inputs/source.docx").write_bytes(before[0])
+            other = state / "work/result.docx"
+            other.write_bytes(before[1])
+            relative = {"original": "inputs/source.docx", "candidate": "work/result.docx"}
+            assert (await call_tool(client, "check_docx", relative))["changes"] == report["changes"]
+            assert (await call_tool(client, "check_docx", {**relative, "candidate": str(candidate)}))["changes"] == report["changes"]
+            misbound = await client.call_tool("check_docx", {**request, "candidate": str(other)})
+            assert misbound.is_error and "different candidate path" in misbound.content[0].text
+
+            task = await call_tool(client, "document_task", {"action": "start", "file": str(candidate)})
+            task_report = await call_tool(client, "check_docx", {"task_id": task["task_id"], "render": True})
+            assert task_report["comparison"] == {
+                "mode": "task", "task_id": task["task_id"], "task_file": str(candidate),
+                "original": task["snapshot"], "candidate": str(Path(task["cwd"]) / task["candidate"])}
+            protected = Path(task["snapshot"])
+            alias = tmp_path / "alias.docx"
+            alias.symlink_to(protected)
+            (state / "work/alias.docx").symlink_to(protected)
+            blocked = [str(protected), str(alias), "work/alias.docx"]
+            alternate_case = state.with_name("PRIVATE STATE") / protected.relative_to(state)
+            if alternate_case.is_file():
+                blocked.append(str(alternate_case))
+            for path in blocked:
+                response = await client.call_tool("check_docx", {**paths, "candidate": path})
+                assert response.is_error, path
+
+            copied = await client.call_tool("check_docx", {"original": str(candidate), "candidate": str(candidate),
+                "preview_id": task_report["preview"]["preview_id"]})
+            assert copied.is_error and "different original path" in copied.content[0].text
+            assert (original.read_bytes(), candidate.read_bytes()) == before
+
+    asyncio.run(exercise())

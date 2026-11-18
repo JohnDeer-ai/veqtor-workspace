@@ -348,7 +348,7 @@ def _compact(result):
 
 
 def change_summary(before, after, start=0):
-    """Compact current-task differences; use read_docx for full text/history."""
+    """Compact differences between two documents."""
     if type(start) is not int or start < 0:
         raise ValueError("changes_start must be a nonnegative integer.")
     changes = []
@@ -364,7 +364,7 @@ def change_summary(before, after, start=0):
             offset = max(0, shared - 70)
         changes.append({"before": brief(old, offset) if old else None, "after": brief(new, offset) if new else None,
                         "kind": "formatting_or_markup" if old and new and old["text"] == new["text"] else kind})
-    return {"scope": "Snapshot before this task versus result, including markup changes; excerpts show the first text difference, not full text. "
-                     "Adjacent changed paragraphs are paired by order, not semantic identity. This is not a history of rounds.",
+    return {"scope": "Original versus candidate, including markup changes. Excerpts show the first text difference. "
+                     "Adjacent changed paragraphs are paired by order.",
             "total": len(changes), "items": changes[start:start + 5],
             "next_start": start + 5 if start + 5 < len(changes) else None}

@@ -113,7 +113,7 @@ def select_pages(result: dict, pages: list[int] | None = None, side: str = "cand
             "unshown_changed_pages": [n for n in result["changed_pages"] if n not in pages]}
 
 
-def read_preview(root: Path, preview_id: str, original: Path, candidate: Path) -> dict:
+def read_preview(root: Path, preview_id: str, original: Path, candidate: Path, *, require_paths: bool = False) -> dict:
     """Reuse a protected preview only while it still matches both documents."""
     if not re.fullmatch(r"[0-9a-f]{12}", preview_id):
         raise ValueError("Invalid preview_id.")
@@ -124,7 +124,13 @@ def read_preview(root: Path, preview_id: str, original: Path, candidate: Path) -
     if result["status"] != "rendered" or Path(result["directory"]).resolve() != receipt.parent:
         raise ValueError("Preview is not a completed render.")
     for name, path in (("original", original), ("candidate", candidate)):
-        if hashlib.sha256(path.read_bytes()).hexdigest() != result["files"][name]["sha256"]:
+        recorded = result["files"][name]
+        if "path" in recorded:
+            if recorded["path"] != str(path):
+                raise ValueError(f"This preview belongs to a different {name} path.")
+        elif require_paths:
+            raise ValueError("This preview has no recorded source paths. Render the selected documents again.")
+        if hashlib.sha256(path.read_bytes()).hexdigest() != recorded["sha256"]:
             raise ValueError(f"The {name} changed since this preview; render the current documents again.")
     return {**result, "reused": True}
 
@@ -186,7 +192,8 @@ def render_pair(original: Path, candidate: Path, output: Path, config: Path,
                 raise RuntimeError(f"{name} renderer did not produce a complete numbered page set.")
             if hashlib.sha256(source.read_bytes()).hexdigest() != source_hash:
                 raise RuntimeError(f"{name} changed during rendering; preview does not verify the current file.")
-            result["files"][name] = {"sha256": source_hash, "pages": len(pages), "directory": str(target)}
+            result["files"][name] = {"path": str(source.resolve()), "sha256": source_hash,
+                                     "pages": len(pages), "directory": str(target)}
         before, after = (result["files"][key]["pages"] for key in ("original", "candidate"))
         changed = []
         for number in range(1, max(before, after) + 1):

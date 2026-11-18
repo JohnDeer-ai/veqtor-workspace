@@ -73,7 +73,8 @@ def build_server(workspace: Workspace) -> MCPServer:
         reply_bytes chooses a smaller UTF-8 output page; requests above the server ceiling
         (normally 24,000 bytes shared by stdout/stderr/artifact names) are capped, not rejected.
         Artifact continuations contain JSONL filenames. All files are compared before paging the result list.
-        For new revision/comment metadata, os.environ supplies VEQTOR_AUTHOR and fresh VEQTOR_UTC_NOW.
+        Optional veqtor_workspace.text_edits.stamp_revision_time(element) sets Word time and UTC.
+        os.environ supplies VEQTOR_AUTHOR and fresh VEQTOR_UTC_NOW.
         Verify the requested result using a suitable method of your choice. check_docx is optional.
         """
         result = await call("run_python", {"code": code, "timeout_seconds": timeout_seconds,
@@ -116,7 +117,9 @@ def build_server(workspace: Workspace) -> MCPServer:
                    changes_start: int = 0) -> CallToolResult:
         """Optional DOCX diagnostics and LibreOffice preview; never a save gate or approval verdict.
 
-        Use task_id for the task snapshot/result, or original/candidate in copy mode.
+        Use task_id for the task snapshot/result, or original/candidate for two files.
+        In path mode, pass absolute paths to compare selected files read-only.
+        Relative inputs/... and work/... paths are also supported.
         Compares text, formatting, revisions and comments after undoing inferred new edits.
         This assumes additive tracked edits: accepting revisions, deleting comments or a clean
         copy can legitimately produce observations. Interpret findings against the request;
@@ -124,14 +127,15 @@ def build_server(workspace: Workspace) -> MCPServer:
         Warnings include dates, placement and unnecessarily broad plain-text replacements.
         No automatic repair. This is not a complete difference report, legal check or Word test.
 
-        changes returns five before/after excerpts; pass its next_start as changes_start for more.
+        comparison identifies both files. changes returns five before/after excerpts with paragraph
+        addresses before the preview pages. Pass its next_start as changes_start for more.
         Optional read_docx reads full passages/history. preview_guidance identifies nested
         deletions that LibreOffice may display differently; native_word reports not checked.
 
         render=True renders both files once (shared deadline normally 60s, within the call ceiling).
         All pages are rendered; at most three images are returned per call. Reuse preview_id
         with preview_pages or preview_query to inspect more without rendering again.
-        preview_side selects candidate or original. Cached checks are reused only for unchanged files.
+        preview_side selects candidate or original. Reuse requires the same file pair and bytes.
         Page numbers belong to this preview, not Word. changed_pages includes pagination shifts.
         Give clause/text locations too. A successful render does not mean images were reviewed.
         Report structural checks, visual review, Word opening and Word accept/reject separately.
