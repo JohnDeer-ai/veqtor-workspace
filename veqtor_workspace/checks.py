@@ -492,6 +492,8 @@ def _revision_date_issue(date, utc, checked_at):
     # Compare clock digits loosely, since Word can write local digits with a Z suffix.
     if abs(display.replace(tzinfo=None) - instant.replace(tzinfo=None)) > timedelta(days=1):
         return "w:date and dateUtc differ by more than a day."
+    if display.tzinfo is not None and not date.endswith("Z") and display != instant:
+        return "w:date and dateUtc refer to different instants."
     return None
 
 

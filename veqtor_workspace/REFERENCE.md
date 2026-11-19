@@ -54,7 +54,8 @@ After attaching a new revision to the document, optionally call
 supplied as `VEQTOR_LOCAL_NOW` for each Python call, writing local clock time in `w:date`
 and the UTC instant in `w16du:dateUtc`. `VEQTOR_UTC_NOW` is available for comments.
 For new revisions with a UTC companion, diagnostics use it to flag instants more than five minutes
-ahead of `checked_at_utc`. Other revision dates and comment dates require an explicit timezone
+ahead of `checked_at_utc` and check that a numeric offset in `w:date` gives the same instant.
+Other revision dates and comment dates require an explicit timezone
 (`Z` or `+/-HH:MM`, with minutes 00–59 and a maximum offset of 14:00).
 Preserve unrelated earlier text, authors, dates and history.
 When splitting runs, preserve mixed formatting and use `xml:space="preserve"` on text pieces
@@ -81,9 +82,12 @@ comment removal intentionally change the baseline history.
 
 ## Optional diagnostics and preview
 
-`check_docx(task_id=...)` compares the snapshot with the result. In path mode,
-`check_docx(original="/received/file.docx", candidate="/draft/file.docx")` reads the two selected files.
-Relative `inputs/...` and `work/...` paths are also supported. `comparison` identifies the file pair.
+`check_docx(task_id=...)` compares that task's snapshot and result. In path mode,
+`check_docx(original="/received/file.docx", candidate="/draft/file.docx")` directly compares
+two selected files outside the server's private workspace, including files with the same name.
+Within the private workspace, both absolute and relative paths must use `inputs/` for
+`original` and `work/` for `candidate`. A direct comparison of two workspace copies
+requires one in each directory. `comparison` identifies the file pair.
 The diagnostics assume additive tracked edits: they identify and undo new revisions/comments, then compare.
 It is not a complete difference report and cannot always separate old/new revisions sharing
 metadata. `observations` may describe requested changes or uncertain history; interpret them

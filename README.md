@@ -222,12 +222,15 @@ placement of indistinguishable copies can be ambiguous.
   Artifact names use at most one quarter of that same budget, leaving room for Python's text/errors;
   artifacts_count and artifacts_remaining make a shortened list explicit. Remaining names continue as JSONL
   through the same output_cursor, also after saving a task. Raw stdout/stderr are not mixed with filenames.
-- Each Python call receives `VEQTOR_UTC_NOW`, an actual UTC timestamp, alongside
-  `VEQTOR_AUTHOR`. These are conveniences for new revisions/comments, not enforced
-  metadata. Diagnostics check the original timezone spelling/range (without normalizing
-  invalid offsets) and warn about missing/invalid/timezone-less dates or dates more
-  than five minutes ahead of `checked_at_utc`. Retained historical dates are not changed
-  or rechecked as new. Cached reports retain their original check time; saving is unaffected.
+- Each Python call receives `VEQTOR_AUTHOR`, `VEQTOR_UTC_NOW` and `VEQTOR_LOCAL_NOW` with the
+  Mac's local time and offset. The optional `stamp_revision_time(element)` helper writes the
+  Mac's local time in `w:date` on a new, attached revision and the same instant in `w16du:dateUtc`.
+  A local `w:date` without a timezone is valid with a correct UTC companion. Diagnostics use
+  that companion for the five-minute future check and warn if a numeric offset in `w:date`
+  gives a different instant. New revisions without a UTC companion and new comments use the
+  existing checks for missing or invalid dates, explicit timezone spelling and range, and dates more
+  than five minutes ahead of `checked_at_utc`. Cached reports retain their check time.
+  Saving remains independent of these diagnostics.
 - The checker undoes the new tracked changes and new comments and compares the whole
   document with the original, so untracked text, formatting, paragraph, table and
   comment mismatches are reported with their location. It is an optional diagnostic,

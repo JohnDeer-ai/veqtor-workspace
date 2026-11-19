@@ -67,6 +67,8 @@ def test_revision_stamp_sets_local_clock_and_utc(tmp_path, clock, monkeypatch, l
 
 @pytest.mark.parametrize('display,utc,reason', [
     ('2026-11-14T20:43:00Z', '2026-11-14T17:43:00Z', None),
+    ('2026-11-14T15:00:19+03:00', '2026-11-14T12:00:19Z', None),
+    ('2026-11-14T15:00:19+03:00', '2026-11-14T13:00:19Z', 'different instants'),
     ('2026-11-14T14:43:00Z', '2026-11-14T17:49:00Z', 'future'),
     ('2026-11-14T20:43:00Z', '2026-11-14T20:43:00+03:00', 'must use UTC'),
     ('2026-11-14T20:43:00Z', 'invalid', 'Invalid dateUtc'),
