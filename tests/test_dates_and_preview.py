@@ -65,28 +65,33 @@ def test_revision_stamp_sets_local_clock_and_utc(tmp_path, clock, monkeypatch, l
     assert not findings and not report['summary']['warnings']
 
 
-@pytest.mark.parametrize('display,utc,reason', [
-    ('2026-11-14T20:43:00Z', '2026-11-14T17:43:00Z', None),
-    ('2026-11-14T15:00:19+03:00', '2026-11-14T12:00:19Z', None),
-    ('2026-11-14T15:00:19+03:00', '2026-11-14T13:00:19Z', 'different instants'),
-    ('2026-11-14T14:43:00Z', '2026-11-14T17:49:00Z', 'future'),
-    ('2026-11-14T20:43:00Z', '2026-11-14T20:43:00+03:00', 'must use UTC'),
-    ('2026-11-14T20:43:00Z', 'invalid', 'Invalid dateUtc'),
-    ('2026-11-14T20:43:00+03:75', '2026-11-14T17:43:00Z', 'valid explicit timezone'),
-    ('2099-11-14T20:43:00Z', '2026-11-14T17:43:00Z', 'more than a day'),
+@pytest.mark.parametrize('display,utc,reasons', [
+    ('2026-11-14T20:43:00Z', '2026-11-14T17:43:00Z', ()),
+    ('2026-11-14T15:00:19+03:00', '2026-11-14T12:00:19Z', ()),
+    ('2026-11-14T15:00:19+03:00', '2026-11-14T13:00:19Z', ('different instants',)),
+    ('2026-11-14T20:43:00+03:00', '2026-11-14T18:43:00Z', ('future', 'different instants')),
+    ('2026-11-14T21:43:00+03:00', '2026-11-14T18:43:00Z', ('future',)),
+    ('2026-11-14T14:43:00Z', '2026-11-14T17:49:00Z', ('future',)),
+    ('2026-11-14T20:43:00Z', '2026-11-14T20:43:00+03:00', ('must use UTC',)),
+    ('2026-11-14T20:43:00Z', 'invalid', ('Invalid dateUtc',)),
+    ('2026-11-14T20:43:00+03:75', '2026-11-14T17:43:00Z', ('valid explicit timezone',)),
+    ('2099-11-14T20:43:00Z', '2026-11-14T17:43:00Z', ('more than a day',)),
 ])
-def test_word_revision_date_uses_utc_companion(tmp_path, clock, display, utc, reason):
+def test_word_revision_date_uses_utc_companion(tmp_path, clock, display, utc, reasons):
     clock.instant = datetime(2026, 11, 14, 17, 43, tzinfo=timezone.utc)
     attrs = f'xmlns:du="{ET.QName(REVISION_DATE_UTC).namespace}" du:dateUtc="{utc}"'
     inserted = rev('ins', '1', ME, run(' added'), date=display).replace('<w:ins ', f'<w:ins {attrs} ', 1)
     _, report = check(tmp_path, [para(run('Clause'))], [para(run('Clause'), inserted)])
     dates = next(c for c in report['checks'] if c['check'] == 'new_revision_dates')
-    if reason is None:
+    if not reasons:
         assert dates['status'] == 'passed', dates
     else:
         assert dates['status'] == 'warning', dates
+        assert dates['detail']['count'] == 1
         issue, = dates['detail']['issues']
-        assert issue['date'] == display and issue['dateUtc'] == utc and reason in issue['issue']
+        assert (issue['id'], issue['date'], issue['dateUtc']) == ('1', display, utc)
+        assert all(reason in issue['issue'] for reason in reasons), issue
+        assert ('different instants' in issue['issue']) == ('different instants' in reasons)
 
 
 @pytest.mark.parametrize('date,reason', [

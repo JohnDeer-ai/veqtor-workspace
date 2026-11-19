@@ -484,17 +484,15 @@ def _revision_date_issue(date, utc, checked_at):
         return f"Invalid dateUtc. {issue}"
     if instant.utcoffset() != timedelta(0):
         return "dateUtc must use UTC."
-    if issue := _future_date_issue(instant, checked_at):
-        return issue
-    display, issue = _parse_date(date, allow_local=True)
-    if issue:
-        return issue
-    # Compare clock digits loosely, since Word can write local digits with a Z suffix.
-    if abs(display.replace(tzinfo=None) - instant.replace(tzinfo=None)) > timedelta(days=1):
-        return "w:date and dateUtc differ by more than a day."
-    if display.tzinfo is not None and not date.endswith("Z") and display != instant:
-        return "w:date and dateUtc refer to different instants."
-    return None
+    future_issue = _future_date_issue(instant, checked_at)
+    display, display_issue = _parse_date(date, allow_local=True)
+    if display is not None:
+        # Compare clock digits loosely, since Word can write local digits with a Z suffix.
+        if abs(display.replace(tzinfo=None) - instant.replace(tzinfo=None)) > timedelta(days=1):
+            display_issue = "w:date and dateUtc differ by more than a day."
+        elif display.tzinfo is not None and not date.endswith("Z") and display != instant:
+            display_issue = "w:date and dateUtc refer to different instants."
+    return " ".join(issue for issue in (future_issue, display_issue) if issue) or None
 
 
 def _story(part, a, b, author, new_comment_ids, checked_at):
