@@ -22,7 +22,7 @@ from veqtor_workspace.runner import Workspace
 from veqtor_workspace.tasks import DocumentTasks
 
 
-CHECK_CACHE_FORMAT = 5
+CHECK_CACHE_FORMAT = 6
 
 
 async def _stop_worker(process):
@@ -211,6 +211,7 @@ def perform(w: Workspace, operation: str, args: dict) -> dict:
                       "checked_at_utc", "native_word", "preview_guidance")
             if changes_start:
                 fields += ("changes",)
+            fields += tuple(key for key in ("unchecked_story_xml", "unchecked_auxiliary_xml") if key in result)
             facts = result["comment_facts"]
             result = {key: result[key] for key in fields}
             result["comment_facts"] = {**facts, **{side: {k: v for k, v in facts[side].items() if k != "items"}

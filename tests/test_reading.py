@@ -148,7 +148,7 @@ def test_comment_range_reply_and_unlocated_comment(tmp_path):
     path = docx(tmp_path / "comments.docx", body, parts)
     found = [x for x in read_all(path) if x['type'] == 'comment']
     assert len(found) == 3
-    assert found[0]['anchor_markup_excerpt'] == 'firstsecond'
+    assert found[0]['anchor_markup_excerpt'] == 'first\nsecond'
     assert len(found[0]['paragraphs']) == 2 and found[0]['resolved'] is True
     assert found[1]['parent_comment_id'] == '0' and found[1]['paragraphs'] == found[0]['paragraphs']
     assert found[2]['anchor_status'] == 'not_located'

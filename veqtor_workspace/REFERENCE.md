@@ -97,11 +97,11 @@ The diagnostics undo inferred new revisions before comparing story content. Comm
 remain visible in the paragraph change list. `comment_facts` contains independent counts and
 excerpts for each file and their net count difference when both counts are available.
 Use `read_docx(path, format="data")` for all comment records, full text and anchor markup.
-Anchor markup can include retained deleted text. Unknown counts are null. Unknown reply and status fields remain explicit.
+Anchor markup preserves tabs and paragraph breaks and can include retained deleted text. Comment text uses the same strikethrough spans. Unknown counts are null. Unknown reply and status fields remain explicit.
 It is not a complete difference report and cannot always separate old/new revisions sharing
 metadata. `observations` may describe requested changes or uncertain history; interpret them
 against the user's task. Unreadable auxiliary parts are listed separately.
-Unreadable story XML or a package manifest error produces an error. Neither calling this tool nor clearing its observations is required to save.
+Unavailable secondary stories are listed separately. Unreadable main document XML or a package manifest error produces an error. Neither calling this tool nor clearing its observations is required to save.
 Do not dismiss a concrete unexpected loss just because the diagnostic is optional.
 
 `changes` lists five before/after paragraph excerpts and their addresses before the preview pages.

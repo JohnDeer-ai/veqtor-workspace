@@ -23,7 +23,6 @@ from veqtor_workspace.checks import (
     W15,
     M,
     W,
-    _is_story,
     _package,
     _short,
     _sig,
@@ -53,12 +52,10 @@ def _selected_child(node, tag):
     return next((child for child in _selected_children(node) if child.tag == tag), None)
 
 
-def _fallback_view(roots, *, comment_parts=()):
+def _fallback_view(roots):
     """Keep only stored fallbacks, without inferring any Word feature support."""
     omitted, coverage, uncovered = set(), [], {}
     for part, root in sorted(roots.items()):
-        if not (_is_story(part) or part in comment_parts):
-            continue
         fallbacks = without_fallback = 0
         for alternate in root.iter(_ALTERNATE):
             if alternate in omitted:
@@ -102,6 +99,10 @@ def _deleted_row(row):
     return properties is not None and _selected_child(properties, W + "del") is not None
 
 
+_INLINE_TEXT = {W + "tab": "\t", W + "ptab": "\t", W + "br": "\n", W + "cr": "\n",
+                W + "noBreakHyphen": "\u2011", W + "softHyphen": "\u00ad"}
+
+
 def _visible_segments(node, *, formatting=False):
     def walk(e, strike=None):
         if e.tag in (W + "del", W + "moveFrom", W + "pPr", W + "rPr"):
@@ -112,14 +113,8 @@ def _visible_segments(node, *, formatting=False):
             strike = _direct_strike(e)
         if e.tag == W + "t":
             yield _text(e), strike
-        elif e.tag in (W + "tab", W + "ptab"):
-            yield "\t", strike
-        elif e.tag in (W + "br", W + "cr"):
-            yield "\n", strike
-        elif e.tag == W + "noBreakHyphen":
-            yield "\u2011", strike
-        elif e.tag == W + "softHyphen":
-            yield "\u00ad", strike
+        elif e.tag in _INLINE_TEXT:
+            yield _INLINE_TEXT[e.tag], strike
         elif e.tag in (W + "footnoteReference", W + "endnoteReference"):
             yield f"[{_short(e.tag)} {e.get(W + 'id')}]", strike
         else:
@@ -220,8 +215,6 @@ def paragraphs(roots, *, omitted=None):
     projection = cache(_text_and_strikes)
     cell_excerpt = cache(lambda cell: _cell_excerpt(cell, projection, omitted))
     for part, root in sorted(roots.items()):
-        if not _is_story(part):
-            continue
         tables = {e: i for i, e in enumerate(root.iter(W + "tbl"), 1)}
         table_structure = {table: any(e.tag in (W + "cellIns", W + "cellDel", W + "cellMerge", W + "vMerge", W + "gridSpan")
                                      or (e.tag in (W + "trPr", W + "tcPr")
@@ -328,7 +321,12 @@ def _para_id_key(value):
     return value.upper() if value and len(value) == 8 and all(c in "0123456789abcdefABCDEF" for c in value) else value
 
 
-def comment_inventory(roots, sources, *, records=None, view=None):
+def _reading_view(roots, sources, stories):
+    selected_comments = {part: roots[part] for part, issue in sources.values() if part and not issue}
+    return _fallback_view({**stories, **selected_comments})
+
+
+def comment_inventory(roots, sources, stories, *, records=None, view=None):
     """Read comment facts for one package, including limits of the selected view."""
     (primary, issue), (extended, metadata_issue) = sources["comments"], sources["extended"]
     if issue:
@@ -338,7 +336,7 @@ def comment_inventory(roots, sources, *, records=None, view=None):
         return {"total": 0, "items": [], "issues": []}
 
     if view is None:
-        view = _fallback_view(roots, comment_parts=(primary, extended))
+        view = _reading_view(roots, sources, stories)
     omitted, _, uncovered = view
     issues = [{"part": extended, "issue": metadata_issue}] if metadata_issue else []
     complete = not any(next(block.iterancestors(W + "comment"), None) is None for block in uncovered.get(primary, ()))
@@ -346,7 +344,7 @@ def comment_inventory(roots, sources, *, records=None, view=None):
         if uncovered.get(part):
             issues.append({"part": part, "issue": "Some comment XML has no stored fallback."})
     notes = [node for node in primary_root.iter(W + "comment") if node not in omitted]
-    items = _comments(roots, notes, roots.get(extended) if not metadata_issue else None, omitted, records)
+    items = _comments(stories, notes, roots.get(extended) if not metadata_issue else None, omitted, records)
     return {"total": len(notes) if complete else None, "items": items, "issues": issues}
 
 
@@ -356,8 +354,6 @@ def _comments(roots, comments, extended, omitted, records):
     by_node = {r["node"]: r["id"] for r in records} if records is not None else None
     anchors = {}
     for part, root in roots.items():
-        if not _is_story(part):
-            continue
         active = {}
         locators = by_node if by_node is not None else {
             p: f"{part}#p{number}" for number, p in _paragraph_nodes(root, omitted)}
@@ -368,9 +364,14 @@ def _comments(roots, comments, extended, omitted, records):
             marker = tag in (W + "commentRangeStart", W + "commentRangeEnd", W + "commentReference")
             if not marker and not active:
                 continue
-            p = next(e.iterancestors(W + "p"), None)
+            p = e if tag == W + "p" else next(e.iterancestors(W + "p"), None)
             pid = locators.get(p)
-            if marker:
+            if tag == W + "p" and pid:
+                for anchor in active.values():
+                    anchor["text"].append("\n")
+                    if pid not in anchor["paragraphs"]:
+                        anchor["paragraphs"].append(pid)
+            elif marker:
                 cid = e.get(W + "id")
                 anchor = anchors.setdefault(cid, {"paragraphs": [], "text": []})
                 if pid and pid not in anchor["paragraphs"]:
@@ -379,11 +380,12 @@ def _comments(roots, comments, extended, omitted, records):
                     active[cid] = anchor
                 elif tag == W + "commentRangeEnd":
                     active.pop(cid, None)
-            elif tag in (W + "t", W + "delText"):
+            elif tag in (W + "t", W + "delText") or (tag in _INLINE_TEXT and e.getparent().tag == W + "r"):
+                text = _INLINE_TEXT[tag] if tag in _INLINE_TEXT else _text(e)
                 for anchor in active.values():
                     if pid and pid not in anchor["paragraphs"]:
                         anchor["paragraphs"].append(pid)
-                    anchor["text"].append(_text(e))
+                    anchor["text"].append(text)
 
     paragraphs = {c: [p for p in c.iter(W + "p") if p not in omitted] for c in comments}
     para_keys = {p: _para_id_key(p.get(W14 + "paraId")) for ps in paragraphs.values() for p in ps}
@@ -418,15 +420,26 @@ def _comments(roots, comments, extended, omitted, records):
             target = None
         anchor = anchors.get(target, {"paragraphs": [], "text": []})
         anchor_text = "".join(anchor["text"])
-        done = ex.get(W15 + "done") if ex is not None else None
+        done = ex.get(W15 + "done", "0") if ex is not None else None
         resolved = True if done in ("1", "true", "on") else False if done in ("0", "false", "off") else None
+        text, strikes = _comment_text_and_strikes(paragraphs[c])
         result.append({"type": "comment", "id": cid, "author": c.get(W + "author"), "date": c.get(W + "date"),
                        "parent_comment_id": parent, "parent_status": parent_state, "resolved": resolved,
                        "paragraphs": anchor["paragraphs"], "anchor_markup": anchor_text,
                        "anchor_markup_excerpt": anchor_text[:240],
                        "anchor_status": ("ambiguous" if ids[cid] > 1 else "located" if anchor["paragraphs"] else "not_located"),
-                       "text": "\n".join(visible_text(p) for p in paragraphs[c])})
+                       "text": text, **({"strikethrough_spans": strikes} if strikes else {})})
     return result
+
+
+def _comment_text_and_strikes(paragraphs):
+    pieces, strikes, offset = [], [], 0
+    for p in paragraphs:
+        text, spans = _text_and_strikes(p)
+        pieces.append(text)
+        strikes.extend({**span, "start": offset + span["start"], "end": offset + span["end"]} for span in spans)
+        offset += len(text) + 1
+    return "\n".join(pieces), strikes
 
 
 def _select_table_row(records, address, omitted):
@@ -470,13 +483,13 @@ def read_docx(path, query=None, *, details=False, context=1, format="text", tabl
         raise ValueError("Use either table_row or query.")
     path = Path(path)
     before_hash = hashlib.sha256(path.read_bytes()).hexdigest()
-    _, roots, unread, sources = _package(path)
+    _, roots, unread, sources, (stories, story_issues) = _package(path)
     if hashlib.sha256(path.read_bytes()).hexdigest() != before_hash:
         raise ValueError("Document changed while reading; read the saved version again.")
-    view = _fallback_view(roots, comment_parts=[part for part, issue in sources.values() if part and not issue])
+    view = _reading_view(roots, sources, stories)
     omitted, alternatives, _ = view
-    records = paragraphs(roots, omitted=omitted)
-    inventory = comment_inventory(roots, sources, records=records, view=view)
+    records = paragraphs(stories, omitted=omitted)
+    inventory = comment_inventory(roots, sources, stories, records=records, view=view)
     comments = inventory["items"]
     related = {}
     for comment in comments:
@@ -524,15 +537,17 @@ def read_docx(path, query=None, *, details=False, context=1, format="text", tabl
               "scope": "Body, tables, headers/footers, footnotes/endnotes and located comments. Retained markup only; "
                        "accepted/deleted history cannot be reconstructed. Numbering, fields, drawings and final layout are not evaluated.",
               "paragraphs": len(records), "matched_paragraphs": matched, "comments": inventory["total"],
-              "unread_embedded_parts": sorted(n for n in roots if _is_story(n) and any(
-                  e not in omitted for e in roots[n].iter(W + "altChunk"))),
+              "unread_embedded_parts": sorted(n for n, root in stories.items()
+                                             if any(e not in omitted for e in root.iter(W + "altChunk"))),
               "items": items}
     if inventory["issues"]:
         result["comment_issues"] = inventory["issues"]
     if row is not None:
         result["table_row"] = row
-    if unread:
-        result["unread_auxiliary_xml"] = unread
+    if story_issues:
+        result["unread_story_parts"] = story_issues
+    if auxiliary := {part: details["issue"] for part, details in unread.items() if part not in story_issues}:
+        result["unread_auxiliary_xml"] = auxiliary
     if alternatives:
         result["alternate_content"] = alternatives
     return _compact(result, matching_ids) if format == "text" else result
@@ -603,7 +618,8 @@ def _compact(result, matching_ids):
         else:
             meta = {k: item[k] for k in ("id", "author", "date", "parent_comment_id", "parent_status", "resolved") if item.get(k) is not None}
             lines.append("  comment " + json.dumps(meta, ensure_ascii=False, separators=(",", ":"))
-                         + f" at {ranges(item['paragraphs'])}: " + item["text"])
+                         + f" at {ranges(item['paragraphs'])}: "
+                         + _mark_strikes(item["text"], item.get("strikethrough_spans", ())))
             if item["anchor_markup_excerpt"]:
                 lines.append("    anchor excerpt: " + item["anchor_markup_excerpt"])
     if row_hint:
@@ -613,6 +629,8 @@ def _compact(result, matching_ids):
                      f"omitted without a fallback: {entry['omitted_without_fallback']}. Word may choose a different branch.")
     for issue in result.get("comment_issues", ()):
         lines.append(f"Comment facts limited ({issue['part']}): {issue['issue']}")
+    for part, issue in result.get("unread_story_parts", {}).items():
+        lines.append(f"Text coverage limited ({part}): {issue}")
     if unread := result.get("unread_auxiliary_xml"):
         lines.append("Unparsed auxiliary XML: " + ", ".join(unread))
     if result["unread_embedded_parts"]:

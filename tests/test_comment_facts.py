@@ -167,3 +167,139 @@ def test_relocated_unused_comment_ids_can_fail_without_hiding_body_or_comments(t
     changed, = report["changes"]["items"]
     assert (changed["before"]["text_excerpt"], changed["after"]["text_excerpt"]) == (
         "Pay within 30 days", "Pay within 45 days")
+
+
+HEADER = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/header"
+
+
+def test_link_type_and_word_root_determine_notes_and_header_roles(tmp_path):
+    comment_part, header_part = "word/header-notes.xml", "word/notice-margin.xml"
+    links = relationships((COMMENTS, "header-notes.xml"), (HEADER, "notice-margin.xml"))
+    primary = comments(note(0, "Review body"))["word/comments.xml"]
+
+    def document(name, header):
+        return docx(tmp_path / name, [anchored(0, "Body")], {RELS: links, comment_part: primary,
+                    header_part: f'<w:hdr {NS}>{para(run(header))}</w:hdr>'})
+
+    original = document("original.docx", "Notice within 30 days")
+    candidate = document("candidate.docx", "Notice within 45 days")
+    inventory = read_docx(candidate, format="data")
+    assert inventory["comments"] == 1
+    assert [item["location"]["part"] for item in inventory["items"] if item["type"] == "paragraph"] == [
+        "word/document.xml", header_part]
+    report = check_docx(original, candidate, "Reviewer")
+    changed, = report["changes"]["items"]
+    assert changed["after"]["location"]["part"] == header_part
+    assert changed["after"]["text_excerpt"] == "Notice within 45 days"
+
+
+def corrupt_stored_member(path, name):
+    import struct
+    from zipfile import ZIP_STORED, ZipFile
+
+    with ZipFile(path) as archive:
+        member = archive.getinfo(name)
+        assert member.compress_type == ZIP_STORED
+    with path.open("r+b") as handle:
+        handle.seek(member.header_offset + 26)
+        name_length, extra_length = struct.unpack("<HH", handle.read(4))
+        offset = member.header_offset + 30 + name_length + extra_length
+        handle.seek(offset)
+        damaged = bytes([handle.read(1)[0] ^ 1])
+        handle.seek(offset)
+        handle.write(damaged)
+
+
+@pytest.mark.parametrize("failure", ["xml", "crc"])
+def test_linked_unreadable_header_keeps_body_and_declares_partial_comparison(tmp_path, failure):
+    header = "word/notice-margin.xml"
+    links = relationships((HEADER, "notice-margin.xml"))
+    valid_header = f'<w:hdr {NS}>{para(run("Notice"))}</w:hdr>'
+    original = docx(tmp_path / "original.docx", [para(run("Pay in 30 days"))], {RELS: links, header: valid_header})
+    candidate = docx(tmp_path / "candidate.docx", [para(run("Pay in 45 days"))],
+                     {RELS: links, header: "<broken>" if failure == "xml" else valid_header})
+    if failure == "crc":
+        corrupt_stored_member(candidate, header)
+    data = read_docx(candidate, format="data")
+    assert header in data["unread_story_parts"]
+    assert [item["text"] for item in data["items"]] == ["Pay in 45 days"]
+    report = check_docx(original, candidate, "Reviewer")
+    assert report["status"] == "diagnostic"
+    assert [(issue["part"], issue["side"]) for issue in report["unchecked_story_xml"]] == [(header, "candidate")]
+    assert "existing_revisions_preserved" in report["summary"]["not_checked"]
+    assert "Unavailable story parts" in report["changes"]["scope"]
+    changed, = report["changes"]["items"]
+    assert changed["after"]["text_excerpt"] == "Pay in 45 days"
+
+
+def test_bad_comment_relationship_does_not_exempt_changed_theme(tmp_path):
+    theme = "word/theme/theme1.xml"
+    before = {theme: '<theme><color val="110000"/></theme>'}
+    after = {RELS: relationships((COMMENTS, "theme/theme1.xml")), theme: '<theme><color val="220000"/></theme>'}
+    body = [para(run("Clause"))]
+    original = docx(tmp_path / "original.docx", body, before)
+    candidate = docx(tmp_path / "candidate.docx", body, after)
+    report = check_docx(original, candidate, "Reviewer")
+    assert report["comment_facts"]["candidate"]["total"] is None
+    package = next(item for item in report["checks"] if item["check"] == "package_parts")
+    assert any(issue.get("part") == theme for issue in package["detail"]["issues"])
+
+
+def test_comment_fact_retains_anchor_boundaries_and_strike_in_compact_excerpt(tmp_path):
+    body = [
+        para('<w:commentRangeStart w:id="0"/>', '<w:r><w:t>Pay</w:t><w:tab/><w:t>now</w:t><w:br/><w:t>today</w:t></w:r>'),
+        para(run("and tomorrow"), '<w:commentRangeEnd w:id="0"/>', '<w:r><w:commentReference w:id="0"/></w:r>'),
+    ]
+    plain_prefix = "a" * 234
+    comment = ('<w:comment w:id="0" w:author="Reviewer">'
+               + para(run("A"), run("B", rpr="<w:rPr><w:strike/></w:rPr>"))
+               + '<w:p w14:paraId="000000AA">' + run(plain_prefix)
+               + run("double", rpr="<w:rPr><w:dstrike/></w:rPr>") + "</w:p></w:comment>")
+    parts = {**comments(comment), "word/commentsExtended.xml": extension('<w15:commentEx w15:paraId="000000AA"/>')}
+    path = docx(tmp_path / "original.docx", body, parts)
+    item, = [it for it in read_docx(path, format="data")["items"] if it["type"] == "comment"]
+    assert item["resolved"] is False
+    assert item["anchor_markup"] == "Pay\tnow\ntoday\nand tomorrow"
+    assert item["strikethrough_spans"] == [
+        {"start": 1, "end": 2, "kind": "strike"}, {"start": 237, "end": 243, "kind": "double_strike"}]
+    assert "A[strike]B[/strike]" in read_docx(path)
+
+    plain = docx(tmp_path / "plain.docx", body, {**parts, **comments(
+        comment.replace("<w:strike/>", "").replace("<w:dstrike/>", ""))})
+    facts = check_docx(path, plain, "Reviewer")["comment_facts"]
+    compact = facts["original"]["items"][0]
+    assert compact["text_truncated"] is True and compact["strikethrough_spans"][-1]["end"] == 240
+    assert compact["formatted_excerpt"].endswith("[double-strike]dou[/double-strike]")
+    assert "strikethrough_spans" not in facts["candidate"]["items"][0]
+
+
+def test_excluding_reference_keeps_its_run_formatting_history(tmp_path):
+    changed = ('<w:r><w:rPr><w:b/><w:rPrChange w:id="77" w:author="Reviewer" w:date="2026-01-01T00:00:00Z">'
+               '<w:rPr/></w:rPrChange></w:rPr><w:commentReference w:id="0"/></w:r>')
+    plain = '<w:r><w:rPr><w:b/></w:rPr><w:commentReference w:id="0"/></w:r>'
+    parts = comments(note(0, "Review"))
+    original = docx(tmp_path / "original.docx", [para(run("Clause"), changed)], parts)
+    candidate = docx(tmp_path / "candidate.docx", [para(run("Clause"), plain)], parts)
+    report = check_docx(original, candidate, "Reviewer")
+    assert "existing_revisions_preserved" in report["summary"]["observations"]
+
+
+@pytest.mark.parametrize("member", ["word/comments.xml", "word/document.xml", "[Content_Types].xml"])
+def test_bad_crc_is_local_unless_a_required_member_is_unreadable(tmp_path, member):
+    parts = comments(note(0, "Check"))
+    original = docx(tmp_path / "original.docx", [anchored(0, "Pay in 30 days")], parts)
+    candidate = docx(tmp_path / "candidate.docx", [anchored(0, "Pay in 45 days")], parts)
+    corrupt_stored_member(candidate, member)
+    report = check_docx(original, candidate, "Reviewer")
+    if member == "word/comments.xml":
+        data = read_docx(candidate, query="45 days", context=0, format="data")
+        assert data["matched_paragraphs"] == 1 and data["comments"] is None
+        assert report["status"] == "diagnostic" and report["comment_facts"]["candidate"]["total"] is None
+        assert report["changes"]["items"][0]["after"]["text_excerpt"] == "Pay in 45 days"
+        entry, = report["unchecked_auxiliary_xml"]
+        assert (entry["part"], entry["stage"], entry["bytes_changed"]) == (member, "zip_reading", None)
+    else:
+        assert report["status"] == "error"
+        assert member in report["checks"][0]["detail"]
+        with pytest.raises(ValueError):
+            read_docx(candidate)
