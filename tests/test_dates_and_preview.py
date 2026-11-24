@@ -118,7 +118,7 @@ def test_word_revision_date_uses_utc_companion(tmp_path, clock, display, utc, re
     ('2026-11-14T12:05:01Z', 'future'),
     ('2026-11-14T15:00:00Z', 'future'),
 ])
-def test_only_new_revision_and_comment_dates_warn(tmp_path, clock, date, reason):
+def test_revision_dates_warn_and_comment_dates_remain_facts(tmp_path, clock, date, reason):
     old = para(rev('ins', '0', OTHER, run('History'), date='2099-01-01T00:00:00Z'))
     old_comment = rev('comment', '0', OTHER, para(run('Keep')), date='unknown')
     original = [old, anchored('0', 'First'), para(run('Clause'))]
@@ -129,17 +129,19 @@ def test_only_new_revision_and_comment_dates_warn(tmp_path, clock, date, reason)
     by_name = {c['check']: c for c in report['checks']}
     assert report['checked_at_utc'] == '2026-11-14T12:00:00Z'
     assert report['native_word'] == 'not_checked_by_server'
-    for name in ('new_revision_dates', 'new_comment_dates'):
-        finding = by_name[name]
-        if reason is None:
-            assert finding['status'] == 'passed', finding
-        else:
-            assert finding['status'] == 'warning', finding
-            assert finding['detail']['count'] == 1
-            issue = finding['detail']['issues'][0]
-            assert issue['id'] == '1' and issue['date'] == date
-            assert reason in issue['issue']
-    assert 'existing_comments_preserved' not in report['summary']['observations']
+    finding = by_name["new_revision_dates"]
+    if reason is None:
+        assert finding["status"] == "passed", finding
+    else:
+        assert finding["status"] == "warning", finding
+        assert finding["detail"]["count"] == 1
+        issue = finding["detail"]["issues"][0]
+        assert issue["id"] == "1" and issue["date"] == date
+        assert reason in issue["issue"]
+    facts = report["comment_facts"]
+    assert facts["original"]["items"][0]["date"] == "unknown"
+    assert facts["candidate"]["items"][1]["date"] == date
+    assert "new_comment_dates" not in by_name
 
 
 @pytest.mark.parametrize('date', ['2099-01-01T00:00:00Z', '2026-11-14T10:00:00+03:75'])

@@ -43,7 +43,9 @@ def test_clean_copy_and_comment_removal_save_as_over_mcp(tmp_path, diagnose):
             if diagnose:
                 report = await call("check_docx", {"task_id": task["task_id"]})
                 assert report["status"] == "diagnostic" and not report["summary"]["errors"]
-                assert {"existing_revisions_preserved", "existing_comments_preserved"} <= set(report["summary"]["observations"])
+                assert "existing_revisions_preserved" in report["summary"]["observations"]
+                assert report["comment_facts"]["original"]["total"] == 1
+                assert report["comment_facts"]["candidate"]["total"] == 0
                 assert "defects" not in report["summary"]
             saved = await call("document_task", {"action": "save", "task_id": task["task_id"], "file": str(target)})
             assert saved["status"] == "saved" and saved["file"] == str(target)

@@ -244,35 +244,51 @@ def test_new_anchored_comment_passes(tmp_path):
     assert not failed, report
 
 
-@pytest.mark.parametrize("change,expected", [
-    ("comment_removed", "existing_comments_preserved"),
-    ("anchors_removed", "untracked_changes"),
-    ("resolved_flag_flipped", "existing_comments_preserved"),
-    ("new_comment_unanchored", "new_comments"),
-    ("new_comment_wrong_author", "new_comments"),
-    ("comment_link_changed", "existing_comments_preserved"),
-    ("duplicate_comment_id", "new_comments"),
-])
-def test_comment_defects(tmp_path, change, expected):
-    original = [anchored(0, "Theirs"), para(run("Mine here"))]
+@pytest.mark.parametrize("change", ["comment_removed", "anchors_removed", "resolved_flag_flipped",
+                                    "unanchored", "other_author", "comment_link_changed", "duplicate_id"])
+def test_comment_reports_independent_facts(tmp_path, change):
+    original = [anchored(0, "Theirs"), para(run("Second clause"))]
     candidate, parts = list(original), {**comments(COMMENT), **resolved("0")}
     if change == "comment_removed":
-        parts.update(comments())
+        candidate[0] = para(run("Theirs"))
+        parts = {}
     elif change == "anchors_removed":
-        candidate = [para(run("Theirs")), para(run("Mine here"))]
+        candidate[0] = para(run("Theirs"))
     elif change == "resolved_flag_flipped":
         parts.update(resolved("1"))
-    elif change == "new_comment_unanchored":
+    elif change == "unanchored":
         parts.update(comments(COMMENT, new_comment(ME)))
-    elif change == "comment_link_changed":  # the resolved flag no longer reaches this comment
-        parts.update(comments(COMMENT.replace("1A2B3C4D", "7FA12345")))
-    elif change == "duplicate_comment_id":  # placed first, so a dictionary of entries would keep the original
-        parts.update(comments(COMMENT.replace("Keep this", "Different text"), COMMENT))
-    else:
-        candidate = [anchored(0, "Theirs"), anchored(1, "Mine here")]
+    elif change == "other_author":
+        candidate[1] = anchored(1, "Second clause")
         parts.update(comments(COMMENT, new_comment(OTHER)))
+    elif change == "comment_link_changed":
+        parts.update(comments(COMMENT.replace("1A2B3C4D", "7FA12345")))
+    else:
+        parts.update(comments(COMMENT.replace("Keep this", "Another note"), COMMENT))
     failed, report = check(tmp_path, original, candidate, {**comments(COMMENT), **resolved("0")}, parts)
-    assert expected in failed, report
+    assert failed == ({"package_parts"} if change == "comment_removed" else set())
+    checks = {entry["check"] for entry in report["checks"]}
+    assert not {"existing_comments_preserved", "new_comments", "new_comment_dates"} & checks
+    facts = report["comment_facts"]
+    assert facts["original"]["total"] == 1
+    items = facts["candidate"]["items"]
+    assert facts["candidate"]["total"] == len(items)
+    if change == "comment_removed":
+        assert facts["net_change"] == -1 and not items
+    elif change == "anchors_removed":
+        assert items[0]["anchor_status"] == "not_located"
+        assert report["changes"]["items"][0]["kind"] == "formatting_or_markup"
+    elif change == "resolved_flag_flipped":
+        assert facts["original"]["items"][0]["resolved"] is False and items[0]["resolved"] is True
+    elif change == "unanchored":
+        assert facts["net_change"] == 1 and items[1]["anchor_status"] == "not_located"
+    elif change == "other_author":
+        assert items[1]["author"] == OTHER and items[1]["paragraphs"] == ["word/document.xml#p2"]
+    elif change == "comment_link_changed":
+        assert items[0]["resolved"] is None
+    else:
+        assert [(note["text"], note["anchor_status"]) for note in items] == [
+            ("Another note", "ambiguous"), ("Keep this", "ambiguous")]
 
 
 def test_package_changes(tmp_path):

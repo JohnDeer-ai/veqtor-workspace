@@ -120,8 +120,9 @@ def build_server(workspace: Workspace) -> MCPServer:
         Use task_id for the task snapshot/result, or original/candidate for two files.
         In path mode, pass absolute paths to compare selected files read-only.
         Relative inputs/... and work/... paths are also supported.
-        Compares text, formatting, revisions and comments after undoing inferred new edits.
-        This assumes additive tracked edits: accepting revisions, deleting comments or a clean
+        Compares text, formatting and revisions after undoing inferred new revisions.
+        Comment facts are read independently from each file. The paragraph list retains markup differences.
+        This assumes additive tracked revisions: accepting revisions or a clean
         copy can legitimately produce observations. Interpret findings against the request;
         do not rewrite correct content to clear them. errors means unreadable package/XML.
         Warnings include dates, placement and unnecessarily broad plain-text replacements.

@@ -302,6 +302,8 @@ def test_search_and_page_calls_reuse_check_and_refuse_changed_bytes(tmp_path, mo
     args.update(render=False, preview_id=directory.name, preview_query='section   9')
     searched = operations.perform(workspace, 'check_docx', dict(args))['report']
     assert searched['check_reused'] is True and len(calls) == 1
+    assert searched['comment_facts']['net_change'] == 0
+    assert 'items' not in searched['comment_facts']['original']
     for field in ('checked_at_utc', 'native_word', 'preview_guidance'):
         assert searched[field] == initial['report'][field]
     assert searched['native_word'] == 'not_checked_by_server'
@@ -338,11 +340,19 @@ def test_search_and_page_calls_reuse_check_and_refuse_changed_bytes(tmp_path, mo
     assert missing['report']['preview']['unshown_changed_pages'] == [1, 2, 3]
     receipt = directory / 'check.json'
     cache = json.loads(receipt.read_text())
+    cache['format'] = 4
+    cache['report'].pop('comment_facts')
+    receipt.write_text(json.dumps(cache))
+    refreshed = operations.perform(workspace, 'check_docx', dict(args))['report']
+    assert len(calls) == 2 and refreshed['comment_facts'] == initial['report']['comment_facts']
+    assert refreshed['preview']['preview_id'] == initial['report']['preview']['preview_id']
+
+    cache = json.loads(receipt.read_text())
     cache['version'] = '0.0.8'
     receipt.write_text(json.dumps(cache))
     operations.perform(workspace, 'check_docx', dict(args))
-    assert len(calls) == 2
+    assert len(calls) == 3
     candidate.write_bytes(b'changed')
     with pytest.raises(ValueError, match='changed since this preview'):
         operations.perform(workspace, 'check_docx', dict(args))
-    assert len(calls) == 2
+    assert len(calls) == 3

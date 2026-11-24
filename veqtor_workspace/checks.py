@@ -1,10 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Bounded observations, not a universal DOCX validator or a publication gate.
 
-Core idea: undo every new tracked change and every new comment in the candidate.
-What remains must equal the original, apart from harmless differences (run splits,
-rsid/paraId attributes, proofing marks, property order). Anything else is reported
-as an untracked change, with its location.
+Undo new revisions and compare the story XML, excluding comment anchors from
+preservation diagnostics. Paragraph excerpts retain actual markup differences.
+Comment facts are read independently for each selected document.
 """
 
 from __future__ import annotations
@@ -12,12 +11,14 @@ from __future__ import annotations
 import difflib
 import hashlib
 import os
+import posixpath
 import re
 from collections import Counter
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import BinaryIO
+from urllib.parse import urlsplit
 from zipfile import BadZipFile, ZipFile
 
 from lxml import etree as ET
@@ -27,8 +28,6 @@ from veqtor_workspace.text_edits import REVISION_DATE_UTC, TOKEN
 W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 W14 = "{http://schemas.microsoft.com/office/word/2010/wordml}"
 W15 = "{http://schemas.microsoft.com/office/word/2012/wordml}"
-W16CID = "{http://schemas.microsoft.com/office/word/2016/wordml/cid}"
-W16CEX = "{http://schemas.microsoft.com/office/word/2018/wordml/cex}"
 M = "{http://schemas.openxmlformats.org/officeDocument/2006/math}"
 XML_SPACE = "{http://www.w3.org/XML/1998/namespace}space"
 
@@ -55,11 +54,18 @@ NOT_UNDONE = _w("cellIns", "cellDel", "cellMerge", "numberingChange")
 REVISION_TAGS = TEXT_REVISIONS | frozenset(PROPERTY_CHANGES) | MOVE_RANGES | NOT_UNDONE
 BETWEEN_PARAGRAPHS = _w("bookmarkStart", "bookmarkEnd", "commentRangeStart", "commentRangeEnd",
                         "permStart", "permEnd", "proofErr") | MOVE_RANGES
-COMMENT_PARTS = {"word/comments.xml": (W + "comment", W + "id"),
-                 "word/commentsExtended.xml": (W15 + "commentEx", W15 + "paraId"),
-                 "word/commentsIds.xml": (W16CID + "commentId", W16CID + "paraId"),
-                 "word/commentsExtensible.xml": (W16CEX + "commentExtensible", W16CEX + "durableId"),
-                 "word/people.xml": (W15 + "person", W15 + "author")}
+DOCUMENT_RELS = "word/_rels/document.xml.rels"
+_REL = "{http://schemas.openxmlformats.org/package/2006/relationships}"
+_COMMENT_SOURCES = {
+    "comments": ("word/comments.xml", W + "comments", {
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments",
+        "http://purl.oclc.org/ooxml/officeDocument/relationships/comments"}),
+    "extended": ("word/commentsExtended.xml", W15 + "commentsEx", {
+        "http://schemas.microsoft.com/office/2011/relationships/commentsExtended"}),
+}
+_COMMENT_FILES = {"word/comments.xml", "word/commentsExtended.xml", "word/commentsIds.xml",
+                  "word/commentsExtensible.xml", "word/people.xml"}
+COMMENT_ANCHORS = _w("commentRangeStart", "commentRangeEnd", "commentReference")
 RSIDS = frozenset(W + name for name in ("rsidR", "rsidRPr", "rsidRDefault", "rsidP", "rsidDel", "rsidSect", "rsidTr"))
 LAYOUT_IDS = RSIDS | {W14 + "paraId", W14 + "textId"}
 IGNORED = _w("proofErr", "lastRenderedPageBreak")
@@ -74,7 +80,46 @@ class CheckLimit(Exception):
     """A resource limit of this checker, not evidence of document damage."""
 
 
-def _package(source: BinaryIO) -> tuple[dict[str, bytes], dict[str, ET._Element]]:
+def _xml_root(data):
+    parser = ET.XMLParser(resolve_entities=False, no_network=True, load_dtd=False)
+    root = ET.fromstring(data, parser)
+    if root.getroottree().docinfo.doctype:
+        raise ValueError("Document type declarations are not supported by this checker.")
+    return root
+
+
+def _linked_comment_part(parts, relationships, legacy, types):
+    if DOCUMENT_RELS not in parts:
+        return (legacy if legacy in parts else None), None
+    if relationships is None or relationships.tag != _REL + "Relationships":
+        return DOCUMENT_RELS, "Document relationships could not be read."
+    links = [node for node in relationships.iterchildren(_REL + "Relationship") if node.get("Type") in types]
+    if not links:
+        return None, None
+    if len(links) != 1:
+        return DOCUMENT_RELS, "More than one relationship names this comment source."
+    link = links[0]
+    raw = link.get("Target", "")
+    try:
+        target = urlsplit(raw)
+    except ValueError:
+        return DOCUMENT_RELS, "The comment relationship has an invalid target."
+    # Part names refer to ZIP members. A literal %20 remains part of the name.
+    path = target.path
+    if (link.get("TargetMode", "Internal") != "Internal" or target.scheme or target.netloc
+            or not path or any(mark in raw for mark in ("?", "#", "\\"))
+            or any(ord(c) < 32 for c in raw)):
+        return DOCUMENT_RELS, "The comment relationship does not name an internal DOCX part."
+    name = posixpath.normpath(path[1:] if path.startswith("/") else posixpath.join("word", path))
+    reserved = {".", "..", "[Content_Types].xml", "word/styles.xml", "word/settings.xml", "word/numbering.xml"}
+    if name in reserved or name.startswith(("../", "/")) or name.endswith(".rels") or _is_story(name):
+        return DOCUMENT_RELS, "The comment relationship does not name a comment part."
+    if name not in parts:
+        return name, "The linked part is missing."
+    return name, None
+
+
+def _package(source: BinaryIO | Path):
     with ZipFile(source) as archive:
         infos = archive.infolist()
         if len(infos) > 5000 or sum(i.file_size for i in infos) > 64 * 1024 * 1024:
@@ -85,21 +130,41 @@ def _package(source: BinaryIO) -> tuple[dict[str, bytes], dict[str, ET._Element]
         parts = {i.filename: archive.read(i) for i in infos if not i.is_dir()}
     if "word/document.xml" not in parts or "[Content_Types].xml" not in parts:
         raise ValueError("Not a DOCX package.")
-    roots = {}
+    roots, unread = {}, {}
+    if DOCUMENT_RELS in parts:
+        try:
+            roots[DOCUMENT_RELS] = _xml_root(parts[DOCUMENT_RELS])
+        except (ET.XMLSyntaxError, ValueError) as exc:
+            unread[DOCUMENT_RELS] = str(exc)
+
+    sources = {role: _linked_comment_part(parts, roots.get(DOCUMENT_RELS), legacy, types)
+               for role, (legacy, _, types) in _COMMENT_SOURCES.items()}
+    linked = {part for part, issue in sources.values() if part and not issue}
     for name, data in parts.items():
-        if name.endswith((".xml", ".rels")):
-            parser = ET.XMLParser(resolve_entities=False, no_network=True, load_dtd=False)
-            root = ET.fromstring(data, parser)
-            if root.getroottree().docinfo.doctype:
-                raise ValueError("Document type declarations are not supported by this checker.")
-            roots[name] = root
-    return parts, roots
+        if name == DOCUMENT_RELS or (name not in linked and not name.endswith((".xml", ".rels"))):
+            continue
+        try:
+            roots[name] = _xml_root(data)
+        except (ET.XMLSyntaxError, ValueError) as exc:
+            if _is_story(name) or name == "[Content_Types].xml":
+                raise ValueError(f"{name}: {exc}") from exc
+            unread[name] = str(exc)
+
+    for role, (part, issue) in sources.items():
+        if part and not issue:
+            root = roots.get(part)
+            if root is None or root.tag != _COMMENT_SOURCES[role][1]:
+                sources[role] = part, "Could not read the selected comment XML or its root element."
+    if sources["comments"] == (None, None) and any(
+            next(root.iter(*COMMENT_ANCHORS), None) is not None for name, root in roots.items() if _is_story(name)):
+        sources["comments"] = DOCUMENT_RELS, "Comment anchors exist but no comments part could be located."
+    return parts, roots, unread, sources
 
 
 def _package_with_hash(path: Path):
     with path.open("rb") as source:
         before = os.fstat(source.fileno())
-        parts, roots = _package(source)
+        parts, roots, unread, sources = _package(source)
         source.seek(0)
         digest = hashlib.file_digest(source, "sha256").hexdigest()
         after = os.fstat(source.fileno())
@@ -107,7 +172,7 @@ def _package_with_hash(path: Path):
             after.st_size, after.st_mtime_ns, after.st_ctime_ns
         ):
             raise OSError(f"DOCX changed during reading: {path}")
-    return parts, roots, digest
+    return parts, roots, unread, sources, digest
 
 
 def _is_story(name):
@@ -204,23 +269,28 @@ def _key(node):
     return node.tag, node.get(W + "id")
 
 
-def _undo(root, new, new_comment_ids):
-    """Copy of a story part with new revisions and new comment anchors undone."""
+def _story_without_comment_anchors(root):
+    if next(root.iter(*COMMENT_ANCHORS), None) is None:
+        return root
     root = deepcopy(root)
-    problems = []
-
-    def fresh(tags):
-        return [e for e in root.iter(*tags) if _key(e) in new]
-
-    for anchor in list(root.iter(W + "commentRangeStart", W + "commentRangeEnd", W + "commentReference")):
-        if anchor.get(W + "id") not in new_comment_ids:
-            continue
+    for anchor in list(root.iter(*COMMENT_ANCHORS)):
         parent = anchor.getparent()
         if anchor.tag == W + "commentReference" and parent.tag == W + "r" and all(
                 c is anchor or c.tag == W + "rPr" for c in parent):
             parent.getparent().remove(parent)
         else:
             parent.remove(anchor)
+    return root
+
+
+def _undo(root, new):
+    """Copy of a story part with new revisions undone."""
+    root = deepcopy(root)
+    problems = []
+
+    def fresh(tags):
+        return [e for e in root.iter(*tags) if _key(e) in new]
+
     for mark in fresh(_w("ins", "del")):  # inserted rows go, deleted-row marks are withdrawn
         if mark.getparent().tag == W + "trPr":
             row = mark.getparent().getparent()
@@ -495,7 +565,7 @@ def _revision_date_issue(date, utc, checked_at):
     return " ".join(issue for issue in (future_issue, display_issue) if issue) or None
 
 
-def _story(part, a, b, author, new_comment_ids, checked_at):
+def _story(part, a, b, author, checked_at):
     found = {name: [] for name in FINDINGS}
     old_counts = Counter(_key(e) for e in a.iter(*REVISION_TAGS))
     old_keys = set(old_counts)
@@ -526,12 +596,12 @@ def _story(part, a, b, author, new_comment_ids, checked_at):
             continue
         new.add(key)
     if same_stamp:
-        trial, _ = _undo(b, new, new_comment_ids)
+        trial, _ = _undo(b, new)
         if _sig(a) != _sig(trial):
             for extra in (same_stamp, _added_insertions(a, trial, same_stamp)):
                 if not extra:
                     continue
-                alternative, problems = _undo(b, new | extra, new_comment_ids)
+                alternative, problems = _undo(b, new | extra)
                 if problems or _sig(a) != _sig(alternative) or _history(a) != _history(alternative):
                     continue
                 new |= extra
@@ -574,7 +644,7 @@ def _story(part, a, b, author, new_comment_ids, checked_at):
                 found["structure"].append({**where, "issue": "inserted text must use w:t" if e.tag == W + "ins"
                                            else "deleted text must use w:delText"})
     found["quality"] = _redline_quality(b, new, part)
-    restored, problems = _undo(b, new, new_comment_ids)
+    restored, problems = _undo(b, new)
     found["not_undone"] = [{"part": part, **p} for p in problems]
     old_text, old_marks, old_formatting = _history(a)
     new_text, new_marks, new_formatting = _history(restored)
@@ -618,19 +688,22 @@ def _other_children(root, skipped):
     return Counter(_sig(c) for c in root if isinstance(c.tag, str) and c.tag not in skipped)
 
 
-def _package_issues(before, after, left, right):
-    issues, metadata = [], []
+def _package_issues(before, after, left, right, unread, linked_comments):
+    issues, metadata, unchecked = [], [], []
+    comment_files = _COMMENT_FILES | linked_comments
     removed = sorted(set(before) - set(after))
     if removed:
         issues.append({"issue": "parts removed", "parts": removed})
-    added = sorted(n for n in set(after) - set(before) if n not in COMMENT_PARTS and not n.endswith(".rels"))
+    added = sorted(n for n in set(after) - set(before) if n not in comment_files and not n.endswith(".rels"))
     if added:
         issues.append({"issue": "unexpected new parts", "parts": added})
     for name in sorted(set(before) & set(after)):
-        if before[name] == after[name] or _is_story(name) or name in COMMENT_PARTS:
+        if before[name] == after[name] or _is_story(name) or name in comment_files:
             continue
         a, b = left.get(name), right.get(name)
-        if name.startswith("docProps/"):
+        if name in unread:
+            issues.append({"issue": "bytes changed; auxiliary XML comparison incomplete", "part": name})
+        elif name.startswith("docProps/"):
             metadata.append(name)
         elif a is None or b is None:
             issues.append({"issue": "binary part changed", "part": name})
@@ -651,10 +724,30 @@ def _package_issues(before, after, left, right):
                                "part": name})
         elif name.startswith("word/") and _sig(a) != _sig(b):
             issues.append({"issue": "content changed", "part": name})
-        elif not name.startswith("word/") and ET.tostring(a, method="c14n") != ET.tostring(b, method="c14n"):
+        elif not name.startswith("word/"):
             # Custom data outside word/: every character counts, including whitespace.
-            issues.append({"issue": "content changed (custom data, compared exactly)", "part": name})
-    return issues, metadata
+            canonical = []
+            for side, root in (("original", a), ("candidate", b)):
+                try:
+                    canonical.append(ET.tostring(root, method="c14n"))
+                except ET.C14NError as exc:
+                    unchecked.append({"part": name, "side": side, "stage": "canonicalization", "issue": str(exc)})
+            if len(canonical) != 2:
+                issues.append({"issue": "bytes changed; auxiliary XML comparison incomplete", "part": name})
+            elif canonical[0] != canonical[1]:
+                issues.append({"issue": "content changed (custom data, compared exactly)", "part": name})
+    return issues, metadata, unchecked
+
+
+def _comment_report(inventory):
+    items = [{**{key: value for key, value in note.items() if key != "anchor_markup"},
+              "text": note["text"][:240], "paragraphs": note["paragraphs"][:5],
+              **({"text_truncated": True} if len(note["text"]) > 240 else {}),
+              **({"paragraphs_truncated": True} if len(note["paragraphs"]) > 5 else {}),
+              **({"anchor_markup_truncated": True} if len(note["anchor_markup"]) > 240 else {})}
+             for note in inventory["items"][:5]]
+    return {"total": inventory["total"], "items": items,
+            "remaining_items": len(inventory["items"]) - len(items), "issues": inventory["issues"]}
 
 
 def check_docx(original: Path, candidate: Path, author: str, changes_start: int = 0) -> dict:
@@ -675,8 +768,8 @@ def check_docx(original: Path, candidate: Path, author: str, changes_start: int 
         checks.append(item)
 
     try:
-        before, left, original_hash = _package_with_hash(original)
-        after, right, candidate_hash = _package_with_hash(candidate)
+        before, left, unread_left, original_sources, original_hash = _package_with_hash(original)
+        after, right, unread_right, candidate_sources, candidate_hash = _package_with_hash(candidate)
     except CheckLimit as exc:
         return {**evidence, "status": "not_checked", "summary": {"errors": [], "observations": [], "warnings": [],
                 "not_checked": ["docx_preservation"]},
@@ -684,12 +777,23 @@ def check_docx(original: Path, candidate: Path, author: str, changes_start: int 
     except (OSError, ValueError, ET.XMLSyntaxError, BadZipFile, RuntimeError) as exc:
         return {**evidence, "status": "error", "summary": {"errors": ["package_and_xml"], "observations": [], "warnings": [], "not_checked": []},
                 "checks": [{"check": "package_and_xml", "status": "error", "detail": str(exc)}]}
-    add("package_and_xml", True, "ZIP members readable; XML well-formed. This is not an XSD or Word-opening check.")
-    changed = sorted(n for n in before.keys() | after.keys() if before.get(n) != after.get(n))
+    from veqtor_workspace.reading import change_summary, comment_inventory, preview_guidance
 
-    old_comments = _entries(left.get("word/comments.xml"), W + "comment", W + "id")
-    new_comments = {k: e for k, e in _entries(right.get("word/comments.xml"), W + "comment", W + "id").items()
-                    if k not in old_comments}
+    unread = [{"part": part, "side": side, "stage": "parsing", "issue": issue}
+              for side, failures in (("original", unread_left), ("candidate", unread_right))
+              for part, issue in sorted(failures.items())]
+    add("package_and_xml", not unread, {"unread_auxiliary_xml": len(unread)} if unread else None, "warning")
+    changed = sorted(n for n in before.keys() | after.keys() if before.get(n) != after.get(n))
+    original_facts = _comment_report(comment_inventory(left, original_sources))
+    candidate_facts = _comment_report(comment_inventory(right, candidate_sources))
+    counts = original_facts["total"], candidate_facts["total"]
+    comment_facts = {
+        "original": original_facts, "candidate": candidate_facts,
+        "net_change": counts[1] - counts[0] if None not in counts else None,
+        "scope": "Independent file snapshots. Comment IDs are local to each file.",
+        "read_more": "Use read_docx(path, format='data') on each file for all comment records and full text.",
+    }
+
     totals = {name: [] for name in FINDINGS}
     new_count = split = inherited = 0
     for part in sorted(n for n in left.keys() | right.keys() if _is_story(n)):
@@ -697,34 +801,28 @@ def check_docx(original: Path, candidate: Path, author: str, changes_start: int 
         if a is None or b is None:
             totals["untracked"].append({"part": part, "differences": [{"where": "whole part", "change": "added or removed"}]})
             continue
-        found = _story(part, a, b, author, set(new_comments), checked_at)
+        found = _story(part, _story_without_comment_anchors(a), _story_without_comment_anchors(b),
+                       author, checked_at)
         for name in FINDINGS:
             totals[name].extend(found[name])
         new_count, split, inherited = new_count + found["new"], split + found["split"], inherited + found["inherited"]
 
-    comment_issues, repeated = [], []
-    for part, (tag, key) in COMMENT_PARTS.items():
-        old, new = _entries(left.get(part), tag, key), _entries(right.get(part), tag, key)
-        for name, entry in old.items():
-            if name not in new or _sig(entry, RSIDS) != _sig(new[name], RSIDS):
-                comment_issues.append({"part": part, "entry": name, "issue": "removed" if name not in new else "changed"})
-        repeated += [{"part": part, "id": k, "issue": "id used by more than one entry; only one of them can be linked"}
-                     for k in sorted(_repeated(right.get(part), tag, key) - _repeated(left.get(part), tag, key))]
-    referenced = {e.get(W + "id") for n, root in right.items() if _is_story(n) for e in root.iter(W + "commentReference")}
-    new_comment_issues = (repeated + [{"id": k, "issue": "unexpected author", "author": e.get(W + "author")}
-                                      for k, e in new_comments.items() if e.get(W + "author") != author]
-                          + [{"id": k, "issue": "not anchored in the text"} for k in new_comments if k not in referenced])
-    comment_dates = [{"id": k, "date": e.get(W + "date"), "issue": issue}
-                     for k, e in new_comments.items() if (issue := _date_issue(e.get(W + "date"), checked_at))]
-    package_issues, metadata = _package_issues(before, after, left, right)
-
-    add("package_parts", not package_issues, {"issues": package_issues, "metadata_changed": metadata})
+    linked_comments = {part for part, _ in (*original_sources.values(), *candidate_sources.values())
+                       if part and part != DOCUMENT_RELS}
+    package_issues, metadata, uncanonical = _package_issues(
+        before, after, left, right, unread_left.keys() | unread_right.keys(), linked_comments)
+    unchecked = [{**item, "bytes_changed": before.get(item["part"]) != after.get(item["part"])}
+                 for item in unread + uncanonical]
+    add("package_parts", not (package_issues or unchecked), {"issues": package_issues, "metadata_changed": metadata},
+        "observation" if package_issues else "not_checked")
+    if unchecked:
+        add("auxiliary_xml_comparison", False, unchecked, "not_checked")
+    if original_facts["issues"] or candidate_facts["issues"]:
+        add("comment_facts", False, {"note": "See comment_facts for per-file coverage."}, "not_checked")
     add("new_revision_authors", not totals["authors"],
         {"new_revisions": new_count, "unexpected_authors": totals["authors"][:20]})
     add("new_revision_dates", not totals["dates"],
         {"issues": totals["dates"][:20], "count": len(totals["dates"])} if totals["dates"] else None, "warning")
-    add("new_comment_dates", not comment_dates,
-        {"issues": comment_dates[:20], "count": len(comment_dates)} if comment_dates else None, "warning")
     add("new_revision_ids", not totals["ids"], totals["ids"][:20])
     add("new_revision_structure", not totals["structure"], {
         "issues": totals["structure"][:20],
@@ -747,15 +845,10 @@ def check_docx(original: Path, candidate: Path, author: str, changes_start: int 
         "scope": "All revision kinds after undoing new changes; splitting any author's earlier revision "
                  "is allowed when its text, author, date and context are kept. Origins are inferred from the snapshot; "
                  "a mismatch does not by itself prove damage when old/new metadata is ambiguous."})
-    add("existing_comments_preserved", not comment_issues, {
-        "changed_or_removed": comment_issues[:20],
-        "scope": "Comment text, authors, dates, threads and resolved flags; anchors are checked by untracked_changes."})
-    add("new_comments", not new_comment_issues, {"new_comments": len(new_comments), "issues": new_comment_issues})
     add("untracked_changes", not totals["untracked"], {
         "parts": totals["untracked"], "not_undone": totals["not_undone"],
-        "scope": "Undo new revisions and new comments, then compare the whole story XML with the original: "
-                 "text, formatting, paragraphs, table properties, bookmarks and existing comment anchors. "
-                 "Formatting of newly inserted paragraphs is not compared."})
+        "comment_anchors": "Excluded from preservation diagnostics. Raw markup differences remain in changes.",
+        "scope": "Undo new revisions and compare the story XML. Formatting of newly inserted paragraphs is not compared."})
     if inherited:
         checks.append({"check": "inherited_deletion_text", "status": "not_checked",
                        "detail": {"ordinary_text_nodes_inside_existing_deletions": inherited,
@@ -765,11 +858,10 @@ def check_docx(original: Path, candidate: Path, author: str, changes_start: int 
     checks.append({"check": "layout_and_legal_intent", "status": "not_checked",
                    "detail": "Native Word opening/accept-reject, XSD/relationship validation, layout, fields and legal meaning are not checked."})
     group = {s: [c["check"] for c in checks if c["status"] == s] for s in ("observation", "warning", "not_checked")}
-    from veqtor_workspace.reading import change_summary, preview_guidance
-
     return {**evidence, "status": "diagnostic",
             "summary": {"errors": [], "observations": group["observation"], "warnings": group["warning"], "not_checked": group["not_checked"]},
-            "checks": checks, "changed_parts": changed,
+            "checks": checks, "changed_parts": changed, "comment_facts": comment_facts,
+            **({"unchecked_auxiliary_xml": unchecked} if unchecked else {}),
             "original_sha256": original_hash,
             "candidate_sha256": candidate_hash,
             "changes": change_summary(left, right, changes_start),

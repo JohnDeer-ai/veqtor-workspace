@@ -22,7 +22,7 @@ from veqtor_workspace.runner import Workspace
 from veqtor_workspace.tasks import DocumentTasks
 
 
-CHECK_CACHE_FORMAT = 4
+CHECK_CACHE_FORMAT = 5
 
 
 async def _stop_worker(process):
@@ -187,6 +187,7 @@ def perform(w: Workspace, operation: str, args: dict) -> dict:
             reused_check = (cached.get("format") == CHECK_CACHE_FORMAT
                             and cached["version"] == __version__ and cached["author"] == w.author
                             and cached["changes_start"] == changes_start
+                            and "comment_facts" in result
                             and result["original_sha256"] == preview["files"]["original"]["sha256"]
                             and result["candidate_sha256"] == preview["files"]["candidate"]["sha256"])
         except (OSError, ValueError, KeyError, TypeError):
@@ -210,7 +211,10 @@ def perform(w: Workspace, operation: str, args: dict) -> dict:
                       "checked_at_utc", "native_word", "preview_guidance")
             if changes_start:
                 fields += ("changes",)
+            facts = result["comment_facts"]
             result = {key: result[key] for key in fields}
+            result["comment_facts"] = {**facts, **{side: {k: v for k, v in facts[side].items() if k != "items"}
+                                                  for side in ("original", "candidate")}}
             result["check_reused"] = True
         result["preview"] = select_pages(preview, pages, args["preview_side"], query)
         images = [base64.b64encode(Path(p).read_bytes()).decode() for p in result["preview"]["images"]]
