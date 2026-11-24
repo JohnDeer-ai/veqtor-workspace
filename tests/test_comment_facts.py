@@ -373,6 +373,52 @@ def test_incomplete_story_does_not_hide_revision_findings_in_readable_body(tmp_p
     assert all(checks[name]["status"] == "not_checked" for name in _REVISION_CHECKS - {"new_revision_authors"})
 
 
+def test_partial_revision_checks_keep_duplicate_ids_without_speculative_repair_warning(tmp_path):
+    header = "word/header1.xml"
+    links = relationships((HEADER, "header1.xml"))
+    original = docx(tmp_path / "original.docx", [para(run("Clause"))], {RELS: links, header: "<broken>"})
+    addition = '<w:ins w:author="Reviewer" w:id="7" w:date="2026-01-01T00:00:00Z">' + run(" added") + '</w:ins>'
+    candidate = docx(tmp_path / "candidate.docx", [para(run("Clause"), addition, addition)],
+                     {RELS: links, header: f'<w:hdr {NS}>{para(run("Notice"))}</w:hdr>'})
+    report = check_docx(original, candidate, "Reviewer")
+    assert report["status"] == "diagnostic"
+    checks = {item["check"]: item for item in report["checks"]}
+    ids = checks["new_revision_ids"]
+    assert ids["status"] == "observation"
+    assert ids["detail"]["issues"][0]["id"] == "7"
+    assert ids["detail"]["unread_story_parts"] == [header]
+    structure = checks["new_revision_structure"]
+    assert structure["status"] == "not_checked"
+    assert structure["detail"]["unread_story_parts"] == [header]
+    assert "note" not in structure["detail"]
+
+
+@pytest.mark.parametrize("changed_text", [False, True], ids=["case_only", "changed_text"])
+def test_case_only_archive_names_keep_parts_aligned_and_locators_literal(tmp_path, changed_text):
+    links = relationships((COMMENTS, "notes.xml"), (HEADER, "notice.xml"))
+    primary = comments(note(0, "Question"))["word/comments.xml"]
+
+    def document(name, note_part, header_part, text):
+        return docx(tmp_path / name, [anchored(0, "Body")], {RELS: links, note_part: primary,
+                    header_part: f'<w:hdr {NS}>{para(run(text))}</w:hdr>'})
+
+    original = document("original.docx", "word/notes.xml", "word/notice.xml", "Notice 30 days")
+    candidate = document("candidate.docx", "Word/Notes.XML", "Word/Notice.XML",
+                         "Notice 45 days" if changed_text else "Notice 30 days")
+    report = check_docx(original, candidate, "Reviewer")
+    assert report["comment_facts"]["original"]["total"] == report["comment_facts"]["candidate"]["total"] == 1
+    assert report["changed_parts"] == (["Word/Notice.XML"] if changed_text else [])
+    checks = {item["check"]: item for item in report["checks"]}
+    assert checks["package_parts"]["status"] == "passed"
+    assert report["changes"]["total"] == int(changed_text)
+    if changed_text:
+        change, = report["changes"]["items"]
+        assert change["kind"] == "replace"
+        assert change["before"]["location"]["part"] == "word/notice.xml"
+        assert change["after"]["location"]["part"] == "Word/Notice.XML"
+        assert change["after"]["text_excerpt"] == "Notice 45 days"
+
+
 def test_case_ambiguous_comment_target_is_never_chosen(tmp_path):
     primary = comments(note(0, "First"))["word/comments.xml"]
     path = docx(tmp_path / "ambiguous.docx", [anchored(0, "Clause")],

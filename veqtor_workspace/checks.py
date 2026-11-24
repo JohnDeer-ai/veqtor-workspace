@@ -105,6 +105,29 @@ def _part_key(name):
     return name.translate(_ASCII_LOWER)
 
 
+def _part_names(parts):
+    names = {}
+    for name in parts:
+        key = _part_key(name)
+        names[key] = None if key in names else name
+    return names
+
+
+def _part_pairs(before, after):
+    """Keep real member names, folding case only for unique matches."""
+    original, candidate = _part_names(before), _part_names(after)
+    matches = {name: name for name in before.keys() & after.keys()}
+    matches.update({original[key]: candidate[key] for key in original.keys() & candidate.keys()
+                    if original[key] is not None and candidate[key] is not None})
+    def order(name):
+        return _part_key(name), name
+
+    for name in sorted(before, key=order):
+        yield name, matches.get(name)
+    for name in sorted(after.keys() - matches.values(), key=order):
+        yield None, name
+
+
 def _part_name(names, requested):
     key = _part_key(requested)
     if key not in names:
@@ -218,7 +241,7 @@ def _linked_stories(parts, names, links, relationship_part, document):
 
 
 def _package(source: BinaryIO | Path):
-    parts, unread, names = {}, {}, {}
+    parts, unread = {}, {}
     with ZipFile(source) as archive:
         infos = archive.infolist()
         if len(infos) > 5000 or sum(i.file_size for i in infos) > 64 * 1024 * 1024:
@@ -226,11 +249,7 @@ def _package(source: BinaryIO | Path):
                              "Editing is still available; preservation was not checked.")
         if len({i.filename for i in infos}) != len(infos):
             raise ValueError("Duplicate ZIP members.")
-        for entry in infos:
-            if not entry.is_dir():
-                name = entry.filename
-                key = _part_key(name)
-                names[key] = None if key in names else name
+        names = _part_names(entry.filename for entry in infos if not entry.is_dir())
         document, doc_issue = _part_name(names, DOCUMENT)
         manifest, manifest_issue = _part_name(names, MANIFEST)
         if doc_issue or manifest_issue:
@@ -837,53 +856,57 @@ def _other_children(root, skipped):
     return Counter(_sig(c) for c in root if isinstance(c.tag, str) and c.tag not in skipped)
 
 
-def _package_issues(before, after, left, right, unread, comment_parts, stories):
+def _package_issues(before, after, left, right, unread, comment_parts, stories, part_pairs):
     issues, metadata, unchecked = [], [], []
     old_comments, new_comments = comment_parts
-    shared_comments = old_comments & new_comments
-    removed = sorted(set(before) - set(after))
+    old_stories, new_stories = stories
+    removed = sorted(old for old, new in part_pairs if new is None)
     if removed:
         issues.append({"issue": "parts removed", "parts": removed})
-    added = sorted(n for n in set(after) - set(before) if n not in new_comments and not n.endswith(".rels"))
+    added = sorted(new for old, new in part_pairs
+                   if old is None and new not in new_comments and not _part_key(new).endswith(".rels"))
     if added:
         issues.append({"issue": "unexpected new parts", "parts": added})
-    for name in sorted(set(before) & set(after)):
-        if before[name] == after[name] or name in stories or name in shared_comments:
+    for old_name, name in part_pairs:
+        if old_name is None or name is None or before[old_name] == after[name]:
             continue
-        a, b = left.get(name), right.get(name)
-        if before[name] is None or after[name] is None:
+        if (old_name in old_stories and name in new_stories) or (old_name in old_comments and name in new_comments):
             continue
-        if name in unread:
+        a, b = left.get(old_name), right.get(name)
+        if before[old_name] is None or after[name] is None:
+            continue
+        key = _part_key(name)
+        if old_name in unread or name in unread:
             issues.append({"issue": "bytes changed; auxiliary XML comparison incomplete", "part": name})
-        elif name.startswith("docProps/"):
+        elif key.startswith("docprops/"):
             metadata.append(name)
         elif a is None or b is None:
             issues.append({"issue": "binary part changed", "part": name})
-        elif name == "[Content_Types].xml" or name.endswith(".rels"):
+        elif key == _part_key(MANIFEST) or key.endswith(".rels"):
             if _package_entries(a) - _package_entries(b):
                 issues.append({"issue": "existing package entries removed or changed", "part": name})
-        elif name == "word/styles.xml":
+        elif key == "word/styles.xml":
             old, new = _entries(a, W + "style", W + "styleId"), _entries(b, W + "style", W + "styleId")
             changed = sorted(k for k, e in old.items() if k not in new or _sig(e) != _sig(new[k]))
             repeated = sorted(_repeated(b, W + "style", W + "styleId") - _repeated(a, W + "style", W + "styleId"))
             if changed or repeated or _other_children(a, {W + "style"}) != _other_children(b, {W + "style"}):
                 issues.append({"issue": "existing styles changed (new styles are allowed)", "part": name,
                                "styles": changed[:20], "repeated_ids": repeated[:20]})
-        elif name == "word/settings.xml":
+        elif key == "word/settings.xml":
             skipped = {W + "rsids", W + "trackRevisions"}
             if _other_children(a, skipped) != _other_children(b, skipped):
                 issues.append({"issue": "settings changed beyond revision ids and the track-changes switch",
                                "part": name})
-        elif name.startswith("word/") and _sig(a) != _sig(b):
+        elif key.startswith("word/") and _sig(a) != _sig(b):
             issues.append({"issue": "content changed", "part": name})
-        elif not name.startswith("word/"):
+        elif not key.startswith("word/"):
             # Custom data outside word/: every character counts, including whitespace.
             canonical = []
-            for side, root in (("original", a), ("candidate", b)):
+            for side, source, root in (("original", old_name, a), ("candidate", name, b)):
                 try:
                     canonical.append(ET.tostring(root, method="c14n"))
                 except ET.C14NError as exc:
-                    unchecked.append({"part": name, "side": side, "stage": "canonicalization", "issue": str(exc)})
+                    unchecked.append({"part": source, "side": side, "stage": "canonicalization", "issue": str(exc)})
             if len(canonical) != 2:
                 issues.append({"issue": "bytes changed; auxiliary XML comparison incomplete", "part": name})
             elif canonical[0] != canonical[1]:
@@ -944,8 +967,10 @@ def check_docx(original: Path, candidate: Path, author: str, changes_start: int 
     excluded_stories = set(unread_old_story) | set(unread_new_story)
     for stories, opposite, roles in ((old_stories, new_stories, uncertain_new_roles),
                                      (new_stories, old_stories, uncertain_old_roles)):
+        opposite_names = _part_names(opposite)
         for part, root in stories.items():
-            if _part_key(part) in excluded or (part not in opposite and _STORY_ROLE_FOR_TAG.get(root.tag) in roles):
+            key = _part_key(part)
+            if key in excluded or (not opposite_names.get(key) and _STORY_ROLE_FOR_TAG.get(root.tag) in roles):
                 excluded_stories.add(part)
     unread = [{"part": part, "side": side, **details}
               for side, failures, story_failures in (("original", unread_left, unread_old_story),
@@ -954,8 +979,9 @@ def check_docx(original: Path, candidate: Path, author: str, changes_start: int 
     add("package_and_xml", not (unread or story_unread),
         {"unread_auxiliary_xml": len(unread), "unread_story_parts": len(story_unread)}
         if unread or story_unread else None, "warning")
-    changed = sorted((before.keys() ^ after.keys()) | {n for n in before.keys() & after.keys()
-                     if before[n] is not None and after[n] is not None and before[n] != after[n]})
+    part_pairs = list(_part_pairs(before, after))
+    changed = sorted(new or old for old, new in part_pairs if old is None or new is None
+                     or (before[old] is not None and after[new] is not None and before[old] != after[new]))
     original_facts = _comment_report(comment_inventory(left, original_sources, old_stories))
     candidate_facts = _comment_report(comment_inventory(right, candidate_sources, new_stories))
     counts = original_facts["total"], candidate_facts["total"]
@@ -970,8 +996,9 @@ def check_docx(original: Path, candidate: Path, author: str, changes_start: int 
     new_count = split = inherited = 0
     story_before = {part: root for part, root in old_stories.items() if part not in excluded_stories}
     story_after = {part: root for part, root in new_stories.items() if part not in excluded_stories}
-    for part in sorted(story_before.keys() | story_after.keys()):
-        a, b = story_before.get(part), story_after.get(part)
+    for old_part, new_part in _part_pairs(story_before, story_after):
+        part = new_part or old_part
+        a, b = story_before.get(old_part), story_after.get(new_part)
         if a is None or b is None:
             totals["untracked"].append({"part": part, "differences": [{"where": "whole part", "change": "added or removed"}]})
             continue
@@ -985,10 +1012,15 @@ def check_docx(original: Path, candidate: Path, author: str, changes_start: int 
                           for sources in (original_sources, candidate_sources))
     package_issues, metadata, uncanonical = _package_issues(
         before, after, left, right, unread_left.keys() | unread_right.keys(), comment_parts,
-        old_stories.keys() & new_stories.keys())
-    unchecked = [{**item, "bytes_changed": None if before.get(item["part"], b"") is None
-                  or after.get(item["part"], b"") is None else before.get(item["part"]) != after.get(item["part"])}
-                 for item in unread + uncanonical]
+        (old_stories, new_stories), part_pairs)
+    counterparts = {"original": dict(part_pairs), "candidate": {new: old for old, new in part_pairs}}
+    unchecked = []
+    for item in unread + uncanonical:
+        part, side = item["part"], item["side"]
+        other = counterparts[side].get(part)
+        current_parts, other_parts = (before, after) if side == "original" else (after, before)
+        current, opposite = current_parts.get(part), other_parts.get(other, b"")
+        unchecked.append({**item, "bytes_changed": None if current is None or opposite is None else other is None or current != opposite})
     add("package_parts", not (package_issues or unchecked), {"issues": package_issues, "metadata_changed": metadata},
         "observation" if package_issues else "not_checked")
     if unchecked:
@@ -1000,7 +1032,11 @@ def check_docx(original: Path, candidate: Path, author: str, changes_start: int 
 
     def add_revision_check(name, findings, detail, problem="observation"):
         if story_unread:
+            if isinstance(detail, list):
+                detail = {"issues": detail}
             detail = {**(detail or {}), "unread_story_parts": sorted(excluded_stories)}
+            if not findings:
+                detail.pop("note", None)
         add(name, not (findings or story_unread), detail, problem if findings else "not_checked")
 
     add_revision_check("new_revision_authors", totals["authors"],

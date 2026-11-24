@@ -24,6 +24,7 @@ from veqtor_workspace.checks import (
     M,
     W,
     _package,
+    _part_pairs,
     _short,
     _sig,
     _text,
@@ -273,8 +274,15 @@ def paragraphs(roots, *, omitted=None):
 
 def _paragraph_changes(before, after):
     """Align occurrences in each story; shared by excerpts and preview prioritization."""
-    for part in sorted({r["location"]["part"] for r in before + after}):
-        left, right = ([r for r in records if r["location"]["part"] == part] for records in (before, after))
+    grouped = []
+    for records in (before, after):
+        by_part = {}
+        for record in records:
+            by_part.setdefault(record["location"]["part"], []).append(record)
+        grouped.append(by_part)
+    before_parts, after_parts = grouped
+    for old_part, new_part in _part_pairs(before_parts, after_parts):
+        left, right = before_parts.get(old_part, []), after_parts.get(new_part, [])
         matcher = difflib.SequenceMatcher(None, [_sig(r["node"]) for r in left],
                                           [_sig(r["node"]) for r in right], autojunk=False)
         for kind, i, j, k, stop in matcher.get_opcodes():
