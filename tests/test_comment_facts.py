@@ -38,7 +38,7 @@ def test_literal_encoded_parts_win_over_stale_and_decoded_copies(tmp_path):
              "word/" + selected: primary, "word/" + extras: metadata,
              "word/review notes.xml": comments(note(0, "Wrong decoded part"))["word/comments.xml"],
              "word/review status.xml": extension(),
-             RELS: relationships((COMMENTS, selected), (EXTENDED, "/" + "word/" + extras))}
+             RELS: relationships((COMMENTS, selected.upper()), (EXTENDED, "/WORD/" + extras.upper()))}
     path = docx(tmp_path / "linked.docx", [anchored(0, "Selected phrase")], parts)
     data = read_docx(path, query="Useful answer", context=0, format="data")
     assert data["comments"] == 2 and data["matched_paragraphs"] == 1
@@ -318,3 +318,104 @@ def test_valid_relationships_do_not_read_an_orphaned_header(tmp_path):
     change, = report["changes"]["items"]
     assert change["before"]["location"]["part"] == header and change["after"] is None
     assert "unchecked_story_xml" not in report
+
+
+_REVISION_CHECKS = {"new_revision_authors", "new_revision_dates", "new_revision_ids", "new_revision_structure",
+                    "new_revision_placement", "redline_quality"}
+
+
+@pytest.mark.parametrize("mode", ["corrupt", "missing_id", "wrong_type", "deleted"])
+@pytest.mark.parametrize("reverse", [False, True], ids=["forward", "reverse"])
+def test_section_reference_distinguishes_unavailable_and_removed_story(tmp_path, mode, reverse):
+    header = "word/header1.xml"
+    section = ('<w:sectPr xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+               '<w:headerReference w:type="default" r:id="rId1"/></w:sectPr>')
+    shared = {header: f'<w:hdr {NS}>{para(run("Notice"))}</w:hdr>'}
+    original = docx(tmp_path / "original.docx", [para(run("Pay in 30 days")), section],
+                    {**shared, RELS: relationships((HEADER, "header1.xml"))})
+    rels = {"corrupt": "<broken>", "missing_id": relationships(), "deleted": relationships(),
+            "wrong_type": relationships((COMMENTS, "header1.xml"))}[mode]
+    body = [para(run("Pay in 45 days"))]
+    if mode != "deleted":
+        body.append(section)
+    candidate = docx(tmp_path / "candidate.docx", body, {**shared, RELS: rels})
+    read = read_docx(candidate, format="data")
+    assert read["paragraphs"] == 1
+    if mode in ("missing_id", "wrong_type"):
+        assert "rId1" in read["unread_story_parts"][RELS]
+    if reverse:
+        original, candidate = candidate, original
+    report = check_docx(original, candidate, "Reviewer")
+    changes = report["changes"]["items"]
+    if mode == "deleted":
+        assert len(changes) == 2 and "unchecked_story_xml" not in report
+        assert any(item["kind"] == ("insert" if reverse else "delete") for item in changes)
+    else:
+        assert len(changes) == 1 and changes[0]["kind"] == "replace"
+        issue, = report["unchecked_story_xml"]
+        assert issue["part"] == RELS and issue["side"] == ("original" if reverse else "candidate")
+        assert _REVISION_CHECKS <= set(report["summary"]["not_checked"])
+
+
+def test_incomplete_story_does_not_hide_revision_findings_in_readable_body(tmp_path):
+    header = "word/header1.xml"
+    shared = {RELS: relationships((HEADER, "header1.xml")), header: f'<w:hdr {NS}>{para(run("Notice"))}</w:hdr>'}
+    original = docx(tmp_path / "original.docx", [para(run("Clause"))], shared)
+    new_revision = '<w:ins w:author="Another reviewer" w:id="7" w:date="2026-01-01T00:00:00Z">' + run(" added") + '</w:ins>'
+    candidate = docx(tmp_path / "candidate.docx", [para(run("Clause"), new_revision)],
+                     {**shared, header: "<broken>"})
+    report = check_docx(original, candidate, "Reviewer")
+    checks = {item["check"]: item for item in report["checks"]}
+    assert checks["new_revision_authors"]["status"] == "observation"
+    assert checks["new_revision_authors"]["detail"]["new_revisions_in_readable_stories"] == 1
+    assert checks["new_revision_authors"]["detail"]["unexpected_authors"][0]["author"] == "Another reviewer"
+    assert checks["new_revision_authors"]["detail"]["unread_story_parts"] == [header]
+    assert all(checks[name]["status"] == "not_checked" for name in _REVISION_CHECKS - {"new_revision_authors"})
+
+
+def test_case_ambiguous_comment_target_is_never_chosen(tmp_path):
+    primary = comments(note(0, "First"))["word/comments.xml"]
+    path = docx(tmp_path / "ambiguous.docx", [anchored(0, "Clause")],
+                {RELS: relationships((COMMENTS, "notes%20archive.xml")),
+                 "word/Notes%20Archive.xml": primary, "word/notes%20archive.xml": primary})
+    inventory = read_docx(path, format="data")
+    assert inventory["comments"] is None
+    assert "more than one archive member" in inventory["comment_issues"][0]["issue"].lower()
+
+
+@pytest.mark.parametrize("wrong_root", [False, True])
+def test_first_modern_comment_parts_require_matching_role_and_root(tmp_path, wrong_root):
+    original = docx(tmp_path / "original.docx", [para(run("Clause"))])
+    ns_ids = "http://schemas.microsoft.com/office/word/2016/wordml/cid"
+    ns_extensible = "http://schemas.microsoft.com/office/word/2018/wordml/cex"
+    ids = "word/ids%20registry.xml"
+    parts = {**comments(note(0, "Selected comment")),
+             ids: "<theme/>" if wrong_root else f'<ci:commentsIds xmlns:ci="{ns_ids}"/>',
+             "word/ext-list.xml": f'<ce:commentsExtensible xmlns:ce="{ns_extensible}"/>',
+             "word/team.xml": f'<w15:people {NS}/>',
+             RELS: relationships(
+                 (COMMENTS, "comments.xml"),
+                 ("http://schemas.microsoft.com/office/2016/09/relationships/commentsIds", "IDS%20REGISTRY.XML"),
+                 ("http://schemas.microsoft.com/office/2018/08/relationships/commentsExtensible", "ext-list.xml"),
+                 ("http://schemas.microsoft.com/office/2011/relationships/people", "team.xml"))}
+    candidate = docx(tmp_path / "candidate.docx", [anchored(0, "Clause")], parts)
+    report = check_docx(original, candidate, "Reviewer")
+    assert report["comment_facts"]["net_change"] == 1
+    package = next(item for item in report["checks"] if item["check"] == "package_parts")
+    unexpected = [issue for issue in package.get("detail", {}).get("issues", []) if issue["issue"] == "unexpected new parts"]
+    assert unexpected == ([{"issue": "unexpected new parts", "parts": [ids]}] if wrong_root else [])
+
+
+def test_comment_selected_fallback_tokens_match_the_paragraph_projection(tmp_path):
+    def fallback(tag, unexpected):
+        return ('<mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" '
+                'xmlns:qa="urn:test:optional"><mc:Choice Requires="qa">'
+                f'<w:t>{unexpected}</w:t></mc:Choice><mc:Fallback><w:{tag}/></mc:Fallback></mc:AlternateContent>')
+
+    body = [para('<w:commentRangeStart w:id="0"/>',
+                 '<w:r><w:t>Pay</w:t>' + fallback("tab", "discarded") + '<w:t>now</w:t>'
+                 + fallback("br", "duplicate") + '<w:t>today</w:t></w:r>',
+                 '<w:commentRangeEnd w:id="0"/>', '<w:r><w:commentReference w:id="0"/></w:r>')]
+    path = docx(tmp_path / "fallback.docx", body, comments(note(0, "Note")))
+    paragraph, selected = read_docx(path, format="data")["items"]
+    assert paragraph["text"] == selected["anchor_markup"] == "Pay\tnow\ntoday"

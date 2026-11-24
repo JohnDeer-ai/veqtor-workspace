@@ -322,7 +322,8 @@ def _para_id_key(value):
 
 
 def _reading_view(roots, sources, stories):
-    selected_comments = {part: roots[part] for part, issue in sources.values() if part and not issue}
+    selected_comments = {part: roots[part] for role, (part, issue) in sources.items()
+                         if role in ("comments", "extended") and part and not issue}
     return _fallback_view({**stories, **selected_comments})
 
 
@@ -346,6 +347,14 @@ def comment_inventory(roots, sources, stories, *, records=None, view=None):
     notes = [node for node in primary_root.iter(W + "comment") if node not in omitted]
     items = _comments(stories, notes, roots.get(extended) if not metadata_issue else None, omitted, records)
     return {"total": len(notes) if complete else None, "items": items, "issues": issues}
+
+
+def _is_run_token(node):
+    parent = node.getparent()
+    # Fallback markup can wrap a run token without changing its Word parent.
+    while parent is not None and parent.tag == _FALLBACK and parent.getparent() is not None and parent.getparent().tag == _ALTERNATE:
+        parent = parent.getparent().getparent()
+    return parent is not None and parent.tag == W + "r"
 
 
 def _comments(roots, comments, extended, omitted, records):
@@ -380,7 +389,7 @@ def _comments(roots, comments, extended, omitted, records):
                     active[cid] = anchor
                 elif tag == W + "commentRangeEnd":
                     active.pop(cid, None)
-            elif tag in (W + "t", W + "delText") or (tag in _INLINE_TEXT and e.getparent().tag == W + "r"):
+            elif tag in (W + "t", W + "delText") or (tag in _INLINE_TEXT and _is_run_token(e)):
                 text = _INLINE_TEXT[tag] if tag in _INLINE_TEXT else _text(e)
                 for anchor in active.values():
                     if pid and pid not in anchor["paragraphs"]:
@@ -483,7 +492,7 @@ def read_docx(path, query=None, *, details=False, context=1, format="text", tabl
         raise ValueError("Use either table_row or query.")
     path = Path(path)
     before_hash = hashlib.sha256(path.read_bytes()).hexdigest()
-    _, roots, unread, sources, (stories, story_issues) = _package(path)
+    _, roots, unread, sources, (stories, story_issues, _) = _package(path)
     if hashlib.sha256(path.read_bytes()).hexdigest() != before_hash:
         raise ValueError("Document changed while reading; read the saved version again.")
     view = _reading_view(roots, sources, stories)

@@ -61,7 +61,10 @@ MANIFEST = "[Content_Types].xml"
 DOCUMENT_RELS = "word/_rels/document.xml.rels"
 _OFFICE_REL = ("http://schemas.openxmlformats.org/officeDocument/2006/relationships/",
                "http://purl.oclc.org/ooxml/officeDocument/relationships/")
+_RELATIONSHIP_IDS = tuple("{" + uri.rstrip("/") + "}id" for uri in _OFFICE_REL)
 _STORY_ROLES = {"header": W + "hdr", "footer": W + "ftr", "footnotes": W + "footnotes", "endnotes": W + "endnotes"}
+_STORY_ROLE_FOR_TAG = {tag: role for role, tag in _STORY_ROLES.items()}
+_ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
 _REL = "{http://schemas.openxmlformats.org/package/2006/relationships}"
 _COMMENT_SOURCES = {
     "comments": ("word/comments.xml", W + "comments", {
@@ -69,6 +72,11 @@ _COMMENT_SOURCES = {
         "http://purl.oclc.org/ooxml/officeDocument/relationships/comments"}),
     "extended": ("word/commentsExtended.xml", W15 + "commentsEx", {
         "http://schemas.microsoft.com/office/2011/relationships/commentsExtended"}),
+    "ids": ("word/commentsIds.xml", "{http://schemas.microsoft.com/office/word/2016/wordml/cid}commentsIds", {
+        "http://schemas.microsoft.com/office/2016/09/relationships/commentsIds"}),
+    "extensible": ("word/commentsExtensible.xml", "{http://schemas.microsoft.com/office/word/2018/wordml/cex}commentsExtensible", {
+        "http://schemas.microsoft.com/office/2018/08/relationships/commentsExtensible"}),
+    "people": ("word/people.xml", W15 + "people", {"http://schemas.microsoft.com/office/2011/relationships/people"}),
 }
 COMMENT_ANCHORS = _w("commentRangeStart", "commentRangeEnd", "commentReference")
 RSIDS = frozenset(W + name for name in ("rsidR", "rsidRPr", "rsidRDefault", "rsidP", "rsidDel", "rsidSect", "rsidTr"))
@@ -93,6 +101,19 @@ def _xml_root(data):
     return root
 
 
+def _part_key(name):
+    return name.translate(_ASCII_LOWER)
+
+
+def _part_name(names, requested):
+    key = _part_key(requested)
+    if key not in names:
+        return requested, "The linked part is missing."
+    if names[key] is None:
+        return requested, "More than one archive member matches the part name."
+    return names[key], None
+
+
 def _relationship_target(link):
     raw = link.get("Target", "")
     try:
@@ -106,32 +127,30 @@ def _relationship_target(link):
             or any(ord(c) < 32 for c in raw)):
         return None
     name = posixpath.normpath(path[1:] if path.startswith("/") else posixpath.join("word", path))
-    if name in (".", "..", MANIFEST, DOCUMENT) or name.startswith(("../", "/")) or name.endswith(".rels"):
+    key = _part_key(name)
+    if key in (".", "..", _part_key(MANIFEST), DOCUMENT) or name.startswith(("../", "/")) or key.endswith(".rels"):
         return None
     return name
 
 
-def _document_links(roots):
-    root = roots.get(DOCUMENT_RELS)
+def _document_links(root):
     return list(root.iterchildren(_REL + "Relationship")) if root is not None and root.tag == _REL + "Relationships" else None
 
 
-def _linked_comment_part(parts, links, legacy, types):
-    if DOCUMENT_RELS not in parts:
-        return (legacy if legacy in parts else None), None
+def _linked_comment_part(names, links, relationship_part, legacy, types):
+    if relationship_part is None:
+        return _part_name(names, legacy) if _part_key(legacy) in names else (None, None)
     if links is None:
-        return DOCUMENT_RELS, "Document relationships could not be read."
+        return relationship_part, "Document relationships could not be read."
     matches = [link for link in links if link.get("Type") in types]
     if not matches:
         return None, None
     if len(matches) != 1:
-        return DOCUMENT_RELS, "More than one relationship names this comment source."
+        return relationship_part, "More than one relationship names this comment source."
     name = _relationship_target(matches[0])
     if name is None:
-        return DOCUMENT_RELS, "The comment relationship does not name an internal DOCX part."
-    if name not in parts:
-        return name, "The linked part is missing."
-    return name, None
+        return relationship_part, "The comment relationship does not name an internal DOCX part."
+    return _part_name(names, name)
 
 
 def _legacy_story_role(name):
@@ -144,34 +163,62 @@ def _legacy_story_role(name):
     return None
 
 
-def _linked_stories(parts, links):
-    if DOCUMENT_RELS not in parts:
-        # Legacy inputs without relationships may identify a story by name
-        # and the expected Word root.
-        legacy = {name: _STORY_ROLES[role] for name in parts if (role := _legacy_story_role(name))}
-        return {}, legacy, {}
-    if links is None:
-        return {}, {}, {DOCUMENT_RELS: "Document relationships could not be read."}
+def _linked_stories(parts, names, links, relationship_part, document):
+    legacy = {}
+    if relationship_part is None:
+        # Legacy inputs may identify a story by its filename and Word root.
+        legacy = {name: _STORY_ROLES[role] for name in parts
+                  if (role := _legacy_story_role(_part_key(name))) and names[_part_key(name)] == name}
 
-    linked, issues = {}, {}
-    for role, tag in _STORY_ROLES.items():
-        types = {prefix + role for prefix in _OFFICE_REL}
-        for link in links:
-            if link.get("Type") not in types:
-                continue
-            name = _relationship_target(link)
-            if name is None:
-                issues[DOCUMENT_RELS] = "A story relationship does not name an internal DOCX part."
-            elif name not in parts:
-                issues[name] = "A linked story part is missing."
-            else:
-                linked.setdefault(name, set()).add(tag)
-    return linked, {}, issues
+    linked, issues, uncertain_roles = {}, {}, set()
+    type_roles = {prefix + role: role for role in _STORY_ROLES for prefix in _OFFICE_REL}
+    if links is None and relationship_part is not None:
+        issues[relationship_part] = "Document relationships could not be read."
+        uncertain_roles.update(_STORY_ROLES)
+        return linked, legacy, issues, uncertain_roles
+
+    by_id = {}
+    for link in links or ():
+        by_id.setdefault(link.get("Id"), []).append(link)
+    for link in links or ():
+        if (role := type_roles.get(link.get("Type"))) is None:
+            continue
+        rid = link.get("Id")
+        if not rid or len(by_id[rid]) != 1:
+            issues[relationship_part] = f"A {role} relationship has a missing or repeated ID ({rid or 'missing'})."
+            uncertain_roles.add(role)
+            continue
+        target = _relationship_target(link)
+        if target is None:
+            issues[relationship_part] = "A story relationship does not name an internal DOCX part."
+            uncertain_roles.add(role)
+            continue
+        name, issue = _part_name(names, target)
+        if issue:
+            issues[name] = issue
+            uncertain_roles.add(role)
+        else:
+            linked.setdefault(name, set()).add(_STORY_ROLES[role])
+
+    dangling = []
+    for ref in document.iter(W + "headerReference", W + "footerReference"):
+        if next(ref.iterancestors(W + "sectPrChange"), None) is not None:
+            continue
+        role = "header" if ref.tag == W + "headerReference" else "footer"
+        rid = next((value for attr in _RELATIONSHIP_IDS if (value := ref.get(attr))), None)
+        matches = by_id.get(rid, ()) if rid else ()
+        if len(matches) != 1 or type_roles.get(matches[0].get("Type")) != role:
+            dangling.append(f"{role} {rid or '(no r:id)'}")
+            uncertain_roles.add(role)
+    if dangling:
+        part = relationship_part or DOCUMENT_RELS
+        prefix = issues[part] + " " if part in issues else ""
+        issues[part] = prefix + "Section relationships could not be resolved: " + ", ".join(sorted(set(dangling))) + "."
+    return linked, legacy, issues, uncertain_roles
 
 
 def _package(source: BinaryIO | Path):
-    essential = {DOCUMENT, MANIFEST}
-    parts, unread = {}, {}
+    parts, unread, names = {}, {}, {}
     with ZipFile(source) as archive:
         infos = archive.infolist()
         if len(infos) > 5000 or sum(i.file_size for i in infos) > 64 * 1024 * 1024:
@@ -179,6 +226,16 @@ def _package(source: BinaryIO | Path):
                              "Editing is still available; preservation was not checked.")
         if len({i.filename for i in infos}) != len(infos):
             raise ValueError("Duplicate ZIP members.")
+        for entry in infos:
+            if not entry.is_dir():
+                name = entry.filename
+                key = _part_key(name)
+                names[key] = None if key in names else name
+        document, doc_issue = _part_name(names, DOCUMENT)
+        manifest, manifest_issue = _part_name(names, MANIFEST)
+        if doc_issue or manifest_issue:
+            raise ValueError(f"Not a DOCX package. {document if doc_issue else manifest}: {doc_issue or manifest_issue}")
+        essential = {document, manifest}
         for entry in infos:
             if entry.is_dir():
                 continue
@@ -190,33 +247,43 @@ def _package(source: BinaryIO | Path):
                     raise ValueError(f"{name}: {exc}") from exc
                 parts[name] = None
                 unread[name] = {"stage": "zip_reading", "issue": str(exc)}
-    if not essential <= parts.keys():
-        raise ValueError("Not a DOCX package.")
-    roots = {}
-    if parts.get(DOCUMENT_RELS) is not None:
-        try:
-            roots[DOCUMENT_RELS] = _xml_root(parts[DOCUMENT_RELS])
-        except (ET.XMLSyntaxError, ValueError) as exc:
-            unread[DOCUMENT_RELS] = {"stage": "parsing", "issue": str(exc)}
 
-    links = _document_links(roots)
-    sources = {role: _linked_comment_part(parts, links, legacy, types)
+    roots = {}
+    for name in essential:
+        try:
+            roots[name] = _xml_root(parts[name])
+        except (ET.XMLSyntaxError, ValueError) as exc:
+            raise ValueError(f"{name}: {exc}") from exc
+    if roots[document].tag != W + "document":
+        raise ValueError(f"{document}: Unexpected document root.")
+    if roots[manifest].tag != "{http://schemas.openxmlformats.org/package/2006/content-types}Types":
+        raise ValueError(f"{manifest}: Unexpected package manifest root.")
+
+    relationship_part = None
+    if _part_key(DOCUMENT_RELS) in names:
+        relationship_part, issue = _part_name(names, DOCUMENT_RELS)
+        if not issue and parts[relationship_part] is not None:
+            try:
+                roots[relationship_part] = _xml_root(parts[relationship_part])
+            except (ET.XMLSyntaxError, ValueError) as exc:
+                unread[relationship_part] = {"stage": "parsing", "issue": str(exc)}
+        elif issue:
+            unread[relationship_part] = {"stage": "resolution", "issue": issue}
+
+    links = _document_links(roots.get(relationship_part))
+    sources = {role: _linked_comment_part(names, links, relationship_part, legacy, types)
                for role, (legacy, _, types) in _COMMENT_SOURCES.items()}
-    linked, legacy, story_issues = _linked_stories(parts, links)
+    linked, legacy, story_issues, uncertain_roles = _linked_stories(parts, names, links, relationship_part, roots[document])
     xml_targets = linked.keys() | {part for part, issue in sources.values() if part and not issue}
     for name, data in parts.items():
-        if data is None or name == DOCUMENT_RELS or (name not in xml_targets and not name.endswith((".xml", ".rels"))):
+        if data is None or name in essential or _part_key(name) == _part_key(DOCUMENT_RELS):
+            continue
+        if name not in xml_targets and not _part_key(name).endswith((".xml", ".rels")):
             continue
         try:
             roots[name] = _xml_root(data)
         except (ET.XMLSyntaxError, ValueError) as exc:
-            if name in essential:
-                raise ValueError(f"{name}: {exc}") from exc
             unread[name] = {"stage": "parsing", "issue": str(exc)}
-    if roots[DOCUMENT].tag != W + "document":
-        raise ValueError(f"{DOCUMENT}: Unexpected document root.")
-    if roots[MANIFEST].tag != "{http://schemas.openxmlformats.org/package/2006/content-types}Types":
-        raise ValueError(f"{MANIFEST}: Unexpected package manifest root.")
 
     for role, (part, issue) in sources.items():
         if part and not issue:
@@ -225,13 +292,15 @@ def _package(source: BinaryIO | Path):
                 failure = unread[part]["issue"] if part in unread else "Unexpected root element."
                 sources[role] = part, f"Could not read the selected comment source: {failure}"
 
-    stories = {DOCUMENT: roots[DOCUMENT]}
+    stories = {document: roots[document]}
     comment_parts = {part for part, issue in sources.values() if part and not issue}
     for name, expected in linked.items():
         if name in roots and roots[name].tag in expected:
             stories[name] = roots[name]
         else:
             story_issues[name] = unread[name]["issue"] if name in unread else "Unexpected root in a linked story."
+            if name not in unread:
+                uncertain_roles.update(_STORY_ROLE_FOR_TAG[tag] for tag in expected)
     for name, expected in legacy.items():
         if name in linked or name in comment_parts:
             continue
@@ -241,8 +310,8 @@ def _package(source: BinaryIO | Path):
             story_issues[name] = unread[name]["issue"]
     if sources["comments"] == (None, None) and any(
             next(root.iter(*COMMENT_ANCHORS), None) is not None for root in stories.values()):
-        sources["comments"] = DOCUMENT_RELS, "Comment anchors exist but no comments part could be located."
-    return parts, roots, unread, sources, (stories, story_issues)
+        sources["comments"] = relationship_part or DOCUMENT_RELS, "Comment anchors exist but no comments part could be located."
+    return parts, roots, unread, sources, (stories, story_issues, uncertain_roles)
 
 
 def _package_with_hash(path: Path):
@@ -857,8 +926,8 @@ def check_docx(original: Path, candidate: Path, author: str, changes_start: int 
         checks.append(item)
 
     try:
-        before, left, unread_left, original_sources, (old_stories, unread_old_story), original_hash = _package_with_hash(original)
-        after, right, unread_right, candidate_sources, (new_stories, unread_new_story), candidate_hash = _package_with_hash(candidate)
+        before, left, unread_left, original_sources, (old_stories, unread_old_story, uncertain_old_roles), original_hash = _package_with_hash(original)
+        after, right, unread_right, candidate_sources, (new_stories, unread_new_story, uncertain_new_roles), candidate_hash = _package_with_hash(candidate)
     except CheckLimit as exc:
         return {**evidence, "status": "not_checked", "summary": {"errors": [], "observations": [], "warnings": [],
                 "not_checked": ["docx_preservation"]},
@@ -871,7 +940,13 @@ def check_docx(original: Path, candidate: Path, author: str, changes_start: int 
     story_unread = [{"part": part, "side": side, "issue": issue}
                     for side, failures in (("original", unread_old_story), ("candidate", unread_new_story))
                     for part, issue in sorted(failures.items())]
-    excluded_stories = unread_old_story.keys() | unread_new_story.keys()
+    excluded = {_part_key(part) for part in unread_old_story.keys() | unread_new_story.keys()}
+    excluded_stories = set(unread_old_story) | set(unread_new_story)
+    for stories, opposite, roles in ((old_stories, new_stories, uncertain_new_roles),
+                                     (new_stories, old_stories, uncertain_old_roles)):
+        for part, root in stories.items():
+            if _part_key(part) in excluded or (part not in opposite and _STORY_ROLE_FOR_TAG.get(root.tag) in roles):
+                excluded_stories.add(part)
     unread = [{"part": part, "side": side, **details}
               for side, failures, story_failures in (("original", unread_left, unread_old_story),
                                                     ("candidate", unread_right, unread_new_story))
@@ -922,21 +997,28 @@ def check_docx(original: Path, candidate: Path, author: str, changes_start: int 
         add("story_coverage", False, story_unread, "not_checked")
     if original_facts["issues"] or candidate_facts["issues"]:
         add("comment_facts", False, {"note": "See comment_facts for per-file coverage."}, "not_checked")
-    add("new_revision_authors", not totals["authors"],
-        {"new_revisions": new_count, "unexpected_authors": totals["authors"][:20]})
-    add("new_revision_dates", not totals["dates"],
+
+    def add_revision_check(name, findings, detail, problem="observation"):
+        if story_unread:
+            detail = {**(detail or {}), "unread_story_parts": sorted(excluded_stories)}
+        add(name, not (findings or story_unread), detail, problem if findings else "not_checked")
+
+    add_revision_check("new_revision_authors", totals["authors"],
+        {"new_revisions_in_readable_stories" if story_unread else "new_revisions": new_count,
+         "unexpected_authors": totals["authors"][:20]})
+    add_revision_check("new_revision_dates", totals["dates"],
         {"issues": totals["dates"][:20], "count": len(totals["dates"])} if totals["dates"] else None, "warning")
-    add("new_revision_ids", not totals["ids"], totals["ids"][:20])
-    add("new_revision_structure", not totals["structure"], {
+    add_revision_check("new_revision_ids", totals["ids"], totals["ids"][:20])
+    add_revision_check("new_revision_structure", totals["structure"], {
         "issues": totals["structure"][:20],
         "note": "Word 16.95 opens a file with these structures only as a repaired copy."})
-    add("new_revision_placement", not totals["placement"], {
+    add_revision_check("new_revision_placement", totals["placement"], {
         "placements": totals["placement"][:20],
         "note": "Compatibility warning, not damage. Word writes a new insertion beside other revisions, not "
                 "inside them. Word 16.95 opens the tested forms (an insertion inside another author's insertion, "
                 "a deletion inside a deletion) and accepts or rejects them as expected. Other editors and "
                 "checkers were not tested."}, "warning")
-    add("redline_quality", not totals["quality"], {
+    add_revision_check("redline_quality", totals["quality"], {
         "findings": totals["quality"][:20], "count": len(totals["quality"]),
         "scope": "Advisory comparison of equal word edges in adjacent new plain-text revisions, "
                  "with identical run properties, up to 20,000 characters per side. "
