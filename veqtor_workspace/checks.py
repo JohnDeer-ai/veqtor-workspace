@@ -145,13 +145,20 @@ def _legacy_story_role(name):
 
 
 def _linked_stories(parts, links):
-    linked, issues, declared_roles = {}, {}, set()
+    if DOCUMENT_RELS not in parts:
+        # Legacy inputs without relationships may identify a story by name
+        # and the expected Word root.
+        legacy = {name: _STORY_ROLES[role] for name in parts if (role := _legacy_story_role(name))}
+        return {}, legacy, {}
+    if links is None:
+        return {}, {}, {DOCUMENT_RELS: "Document relationships could not be read."}
+
+    linked, issues = {}, {}
     for role, tag in _STORY_ROLES.items():
         types = {prefix + role for prefix in _OFFICE_REL}
-        for link in links or ():
+        for link in links:
             if link.get("Type") not in types:
                 continue
-            declared_roles.add(role)
             name = _relationship_target(link)
             if name is None:
                 issues[DOCUMENT_RELS] = "A story relationship does not name an internal DOCX part."
@@ -159,13 +166,7 @@ def _linked_stories(parts, links):
                 issues[name] = "A linked story part is missing."
             else:
                 linked.setdefault(name, set()).add(tag)
-    if links is None and DOCUMENT_RELS in parts:
-        issues[DOCUMENT_RELS] = "Document relationships could not be read."
-    # The filename is only a fallback hint. A parsed legacy part must have the
-    # expected Word root before it contributes any paragraphs.
-    legacy = {name: _STORY_ROLES[role] for name in parts
-              if (role := _legacy_story_role(name)) and role not in declared_roles}
-    return linked, legacy, issues
+    return linked, {}, issues
 
 
 def _package(source: BinaryIO | Path):

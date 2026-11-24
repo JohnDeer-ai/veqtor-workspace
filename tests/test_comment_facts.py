@@ -303,3 +303,18 @@ def test_bad_crc_is_local_unless_a_required_member_is_unreadable(tmp_path, membe
         assert member in report["checks"][0]["detail"]
         with pytest.raises(ValueError):
             read_docx(candidate)
+
+
+def test_valid_relationships_do_not_read_an_orphaned_header(tmp_path):
+    body = [para(run("Body text"))]
+    header = "word/header1.xml"
+    shared = {header: f'<w:hdr {NS}>{para(run("Previous header"))}</w:hdr>'}
+    original = docx(tmp_path / "original.docx", body,
+                    {**shared, RELS: relationships((HEADER, "header1.xml"))})
+    candidate = docx(tmp_path / "candidate.docx", body, {**shared, RELS: relationships()})
+    inventory = read_docx(candidate, query="Previous header", context=0, format="data")
+    assert inventory["matched_paragraphs"] == 0 and inventory["paragraphs"] == 1
+    report = check_docx(original, candidate, "Reviewer")
+    change, = report["changes"]["items"]
+    assert change["before"]["location"]["part"] == header and change["after"] is None
+    assert "unchecked_story_xml" not in report

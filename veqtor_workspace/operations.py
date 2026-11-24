@@ -22,7 +22,7 @@ from veqtor_workspace.runner import Workspace
 from veqtor_workspace.tasks import DocumentTasks
 
 
-CHECK_CACHE_FORMAT = 6
+CHECK_CACHE_FORMAT = 7
 
 
 async def _stop_worker(process):
