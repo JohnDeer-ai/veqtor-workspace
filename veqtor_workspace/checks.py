@@ -202,11 +202,12 @@ def _linked_stories(parts, names, links, relationship_part, document):
                   if (role := _legacy_story_role(_part_key(name))) and names[_part_key(name)] == name}
 
     linked, issues, uncertain_roles = {}, {}, set()
+    slots, unavailable_slots, targets = {}, set(), {}
     type_roles = {prefix + role: role for role in _STORY_ROLES for prefix in _OFFICE_REL}
     if links is None and relationship_part is not None:
         issues[relationship_part] = "Document relationships could not be read."
         uncertain_roles.update(_STORY_ROLES)
-        return linked, legacy, issues, uncertain_roles
+        return linked, legacy, issues, uncertain_roles, slots, unavailable_slots
 
     by_id = {}
     for link in links or ():
@@ -225,6 +226,7 @@ def _linked_stories(parts, names, links, relationship_part, document):
             uncertain_roles.add(role)
             continue
         name, issue = _part_name(names, target)
+        targets[rid] = name
         if issue:
             issues[name] = issue
         else:
@@ -237,9 +239,17 @@ def _linked_stories(parts, names, links, relationship_part, document):
         role = "header" if ref.tag == W + "headerReference" else "footer"
         rid = next((value for attr in _RELATIONSHIP_IDS if (value := ref.get(attr))), None)
         matches = by_id.get(rid, ()) if rid else ()
+        kind = ref.get(W + "type")
+        slot = (role, kind) if kind in ("default", "first", "even") else None
         if len(matches) != 1 or type_roles.get(matches[0].get("Type")) != role:
-            dangling.append(f"{role} {rid or '(no r:id)'}")
-            uncertain_roles.add(role)
+            label = f"{role} {rid or '(no r:id)'}"
+            dangling.append(f"{label} (type={kind})" if slot is not None else label)
+            if slot is None:
+                uncertain_roles.add(role)
+            else:
+                unavailable_slots.add(slot)
+        elif slot is not None and rid in targets:
+            slots.setdefault(targets[rid], set()).add(slot)
     if dangling:
         part = relationship_part or DOCUMENT_RELS
         prefix = issues[part] + " " if part in issues else ""
@@ -247,7 +257,7 @@ def _linked_stories(parts, names, links, relationship_part, document):
         if relationship_part is None:
             legacy.clear()
             uncertain_roles.update(_STORY_ROLES)
-    return linked, legacy, issues, uncertain_roles
+    return linked, legacy, issues, uncertain_roles, slots, unavailable_slots
 
 
 def _package(source: BinaryIO | Path):
@@ -302,7 +312,8 @@ def _package(source: BinaryIO | Path):
     links = _document_links(roots.get(relationship_part))
     sources = {role: _linked_comment_part(names, links, relationship_part, legacy, types)
                for role, (legacy, _, types) in _COMMENT_SOURCES.items()}
-    linked, legacy, story_issues, uncertain_roles = _linked_stories(parts, names, links, relationship_part, roots[document])
+    linked, legacy, story_issues, uncertain_roles, slots, unavailable_slots = _linked_stories(
+        parts, names, links, relationship_part, roots[document])
     xml_targets = linked.keys() | {part for part, issue in sources.values() if part and not issue}
     for name, data in parts.items():
         if data is None or name in essential or _part_key(name) == _part_key(DOCUMENT_RELS):
@@ -333,14 +344,20 @@ def _package(source: BinaryIO | Path):
         if name in linked or name in comment_parts:
             continue
         if name in roots and roots[name].tag == expected:
-            stories[name] = roots[name]
             unverified.add(name)
+            if expected in (W + "hdr", W + "ftr"):
+                story_issues[name] = "Story attachment cannot be established from a conventional filename."
+                uncertain_roles.add(_STORY_ROLE_FOR_TAG[expected])
+            else:
+                stories[name] = roots[name]
         elif name in unread and name not in {part for part, _ in sources.values()}:
             story_issues[name] = unread[name]["issue"]
     if sources["comments"] == (None, None) and any(
             next(root.iter(*COMMENT_ANCHORS), None) is not None for root in stories.values()):
         sources["comments"] = relationship_part or DOCUMENT_RELS, "Comment anchors exist but no comments part could be located."
-    return parts, roots, unread, sources, (stories, story_issues, uncertain_roles, unverified)
+    for name in story_issues:
+        unavailable_slots.update(slots.get(name, ()))
+    return parts, roots, unread, sources, (stories, story_issues, uncertain_roles, unverified, slots, unavailable_slots)
 
 
 def _package_with_hash(path: Path):
@@ -757,10 +774,11 @@ def _revision_id_issues(part, revisions, old_counts):
 
 def _story(part, a, b, author, checked_at):
     found = {name: [] for name in FINDINGS}
-    old_counts = Counter(_key(e) for e in a.iter(*REVISION_TAGS))
+    old_counts = Counter(_key(e) for e in a.iter(*REVISION_TAGS)) if a is not None else Counter()
     old_keys = set(old_counts)
-    groups = {(e.tag, e.get(W + "author"), e.get(W + "date")) for e in a.iter(*TEXT_REVISIONS)}
-    old_run_properties = {_sig(e) for e in a.iter(W + "rPrChange")}
+    groups = {(e.tag, e.get(W + "author"), e.get(W + "date"))
+              for e in a.iter(*TEXT_REVISIONS)} if a is not None else set()
+    old_run_properties = {_sig(e) for e in a.iter(W + "rPrChange")} if a is not None else set()
     revisions = list(b.iter(*REVISION_TAGS))
     found["ids"] = _revision_id_issues(part, revisions, old_counts)
     new, split, seen = set(), 0, set()
@@ -828,6 +846,10 @@ def _story(part, a, b, author, checked_at):
                 found["structure"].append({**where, "issue": "inserted text must use w:t" if e.tag == W + "ins"
                                            else "deleted text must use w:delText"})
     found["quality"] = _redline_quality(b, new, part)
+    found["new"], found["split"], found["inherited"] = len(new), split, 0
+    if a is None:
+        # A new story has no earlier content to restore or preserve.
+        return found
     restored, problems = _undo(b, new)
     found["not_undone"] = [{"part": part, **p} for p in problems]
     old_text, old_marks, old_formatting = _history(a)
@@ -850,7 +872,6 @@ def _story(part, a, b, author, checked_at):
                                    or [{"where": "outside paragraphs and table properties"}]})
     found["inherited"] = sum(1 for t in b.iter(W + "t") if t.text and any(
         x.tag == W + "del" and _key(x) not in new for x in t.iterancestors()))
-    found["new"], found["split"] = len(new), split
     return found
 
 
@@ -975,8 +996,8 @@ def check_docx(original: Path, candidate: Path, author: str, changes_start: int 
         checks.append(item)
 
     try:
-        before, left, unread_left, original_sources, (old_stories, unread_old_story, uncertain_old_roles, unverified_old), original_hash = _package_with_hash(original)
-        after, right, unread_right, candidate_sources, (new_stories, unread_new_story, uncertain_new_roles, unverified_new), candidate_hash = _package_with_hash(candidate)
+        before, left, unread_left, original_sources, (old_stories, unread_old_story, uncertain_old_roles, unverified_old, old_slots, unavailable_old), original_hash = _package_with_hash(original)
+        after, right, unread_right, candidate_sources, (new_stories, unread_new_story, uncertain_new_roles, unverified_new, new_slots, unavailable_new), candidate_hash = _package_with_hash(candidate)
     except CheckLimit as exc:
         return {**evidence, "status": "not_checked", "summary": {"errors": [], "observations": [], "warnings": [],
                 "not_checked": ["docx_preservation"]},
@@ -991,12 +1012,18 @@ def check_docx(original: Path, candidate: Path, author: str, changes_start: int 
                     for part, issue in sorted(failures.items())]
     excluded = {_part_key(part) for part in unread_old_story.keys() | unread_new_story.keys()}
     excluded_stories = set(unread_old_story) | set(unread_new_story)
-    for stories, opposite, roles in ((old_stories, new_stories, uncertain_new_roles),
-                                     (new_stories, old_stories, uncertain_old_roles)):
+    for stories, opposite, roles, slots, unavailable in (
+            (old_stories, new_stories, uncertain_new_roles, old_slots, unavailable_new),
+            (new_stories, old_stories, uncertain_old_roles, new_slots, unavailable_old)):
         opposite_names = _part_names(opposite)
         for part, root in stories.items():
             key = _part_key(part)
-            if key in excluded or (not opposite_names.get(key) and _STORY_ROLE_FOR_TAG.get(root.tag) in roles):
+            role = _STORY_ROLE_FOR_TAG.get(root.tag)
+            known_slots = slots.get(part, set())
+            # Relate coverage across versions by role and kind. The r:id only resolves within one package.
+            possible_unavailable_slot = bool(known_slots & unavailable) or (
+                not known_slots and any(slot_role == role for slot_role, _ in unavailable))
+            if key in excluded or (not opposite_names.get(key) and (role in roles or possible_unavailable_slot)):
                 excluded_stories.add(part)
     for old_part, new_part in _part_pairs(old_stories, new_stories):
         part = new_part or old_part
@@ -1033,11 +1060,10 @@ def check_docx(original: Path, candidate: Path, author: str, changes_start: int 
         a, b = story_before.get(old_part), story_after.get(new_part)
         if a is None or b is None:
             totals["untracked"].append({"part": part, "differences": [{"where": "whole part", "change": "added or removed"}]})
-            if b is not None:
-                totals["ids"].extend(_revision_id_issues(part, b.iter(*REVISION_TAGS), Counter()))
+        if b is None:
             continue
-        found = _story(part, _story_without_comment_anchors(a), _story_without_comment_anchors(b),
-                       author, checked_at)
+        found = _story(part, _story_without_comment_anchors(a) if a is not None else None,
+                       _story_without_comment_anchors(b), author, checked_at)
         for name in FINDINGS:
             totals[name].extend(found[name])
         new_count, split, inherited = new_count + found["new"], split + found["split"], inherited + found["inherited"]

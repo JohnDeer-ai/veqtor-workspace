@@ -504,7 +504,7 @@ def read_docx(path, query=None, *, details=False, context=1, format="text", tabl
         raise ValueError("Use either table_row or query.")
     path = Path(path)
     before_hash = hashlib.sha256(path.read_bytes()).hexdigest()
-    _, roots, unread, sources, (stories, story_issues, _, unverified_stories) = _package(path)
+    _, roots, unread, sources, (stories, story_issues, _, unverified_stories, _, _) = _package(path)
     if hashlib.sha256(path.read_bytes()).hexdigest() != before_hash:
         raise ValueError("Document changed while reading; read the saved version again.")
     view = _reading_view(roots, sources, stories)

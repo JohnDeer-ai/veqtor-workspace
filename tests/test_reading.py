@@ -495,8 +495,12 @@ def test_table_row_uses_nearest_nested_row_and_preserves_nested_text_in_outer_ro
 
 
 def test_table_row_full_address_selects_header_and_retains_empty_cell_boundary(tmp_path):
+    from test_comment_facts import HEADER, RELS, header_reference, relationships
+
     header = f'<w:hdr {NS}>{_table(_row(_cell(para(run("In header")), _cell()) ))}</w:hdr>'
-    path = docx(tmp_path / "header.docx", [para(run("In body"))], {"word/header1.xml": header})
+    section = f'<w:sectPr>{header_reference("rId1")}</w:sectPr>'
+    path = docx(tmp_path / "header.docx", [para(run("In body")), section],
+                {"word/header1.xml": header, RELS: relationships((HEADER, "header1.xml"))})
     found, = read_all(path, query="In header", context=0)
     result = read_docx(path, table_row=found["id"])
     assert [item["type"] for item in result["items"]] == ["table_cell", "paragraph", "table_cell"]
