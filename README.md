@@ -8,7 +8,7 @@ you want. Ask for tracked changes, comments or a clean copy. Open the result in 
 
 ### Claude Desktop
 
-**[Download Veqtor Workspace for Claude Desktop](https://github.com/JohnDeer-ai/veqtor-workspace/releases/download/v0.1.3/veqtor-workspace-0.1.3-macos-arm64.mcpb)**
+**[Download Veqtor Workspace for Claude Desktop](https://github.com/JohnDeer-ai/veqtor-workspace/releases/download/v0.1.4/veqtor-workspace-0.1.4-macos-arm64.mcpb)**
 
 1. Install and sign in to [Claude Desktop](https://claude.com/download).
 2. Open the downloaded `.mcpb` file with Claude Desktop and choose **Install**.
@@ -21,11 +21,11 @@ The public installer supports Apple Silicon Macs (M1 or newer). Intel Macs are n
 custom extensions; ask its administrator if installation is disabled.
 
 **[Installation guide and ChatGPT Desktop setup](https://veqtor.pro/setup)** ·
-[Release notes and checksums](https://github.com/JohnDeer-ai/veqtor-workspace/releases/tag/v0.1.3)
+[Release notes and checksums](https://github.com/JohnDeer-ai/veqtor-workspace/releases/tag/v0.1.4)
 
 ### ChatGPT Desktop
 
-**[Download Veqtor Workspace for ChatGPT Desktop](https://github.com/JohnDeer-ai/veqtor-workspace/releases/download/v0.1.3/veqtor-workspace-0.1.3-chatgpt-macos-arm64.dmg)**
+**[Download Veqtor Workspace for ChatGPT Desktop](https://github.com/JohnDeer-ai/veqtor-workspace/releases/download/v0.1.4/veqtor-workspace-0.1.4-chatgpt-macos-arm64.dmg)**
 
 This installer is **not signed with Developer ID or notarized by Apple**. After
 macOS blocks its first launch, open **System Settings → Privacy & Security**, find
@@ -64,7 +64,7 @@ assistant works. Unsaved Word changes cannot be detected. Review the result in W
 
 For advanced setup in ChatGPT Desktop or another local MCP client, including
 Codex CLI/IDE, download and unzip the
-[v0.1.3 source](https://github.com/JohnDeer-ai/veqtor-workspace/archive/refs/tags/v0.1.3.zip)
+[v0.1.4 source](https://github.com/JohnDeer-ai/veqtor-workspace/archive/refs/tags/v0.1.4.zip)
 to a permanent folder and install [uv](https://docs.astral.sh/uv/getting-started/installation/).
 Add a local STDIO server using this command (replace the folder and your name):
 
