@@ -15,6 +15,11 @@ Use format="data" for a dictionary with full `items`, original paragraph IDs, lo
 comment anchors and metadata. The helper does not shorten paragraphs or rewrite the file.
 Default text groups repeated warnings by their paragraph IDs, not by a generated summary.
 Matching paragraphs come before neighboring context; both remain available through continuation.
+To expand the physical table row for a search hit, call
+`read_docx(path, table_row="p1423")` with the reported paragraph ID. Full IDs such as
+`word/header1.xml#p2` also work. The row includes its cells in document order and can
+contain nested tables. Text output marks direct `[strike]` and `[double-strike]`;
+structured text stays searchable and reports the marked ranges separately.
 Projected current text incorporates pending edits for reading; it does not accept them in
 the file or reconstruct rounds whose markup has been removed. Inspect reported coverage
 limits with custom code or Word when relevant.
@@ -88,16 +93,20 @@ two selected files outside the server's private workspace, including files with 
 Within the private workspace, both absolute and relative paths must use `inputs/` for
 `original` and `work/` for `candidate`. A direct comparison of two workspace copies
 requires one in each directory. `comparison` identifies the file pair.
-The diagnostics assume additive tracked edits: they identify and undo new revisions/comments, then compare.
+The diagnostics undo inferred new revisions before comparing story content. Comment anchors
+remain visible in the paragraph change list. `comment_facts` contains independent counts and
+excerpts for each file and their net count difference when both counts are available.
+Use `read_docx(path, format="data")` for all comment records, full text and anchor markup.
+Anchor markup preserves tabs and paragraph breaks and can include retained deleted text. Comment text uses the same strikethrough spans. Unknown counts are null. Unknown reply and status fields remain explicit.
 It is not a complete difference report and cannot always separate old/new revisions sharing
 metadata. `observations` may describe requested changes or uncertain history; interpret them
-against the user's task. `errors` means the comparison could not read the package/XML;
-inspect the reason before concluding either file is damaged. Warnings and unchecked areas
-remain explicit. Neither calling this tool nor clearing its observations is required to save.
+against the user's task. Unreadable auxiliary parts are listed separately.
+Unavailable secondary stories are listed separately. Unreadable main document XML or a package manifest error produces an error. Neither calling this tool nor clearing its observations is required to save.
 Do not dismiss a concrete unexpected loss just because the diagnostic is optional.
 
 `changes` lists five before/after paragraph excerpts and their addresses before the preview pages.
-Pass `next_start` as `changes_start` for more excerpts. The optional
+Pass `next_start` as `changes_start` for more excerpts. Direct strikethrough also appears
+when the words are unchanged. The optional
 `redline_quality` observation covers only simple adjacent replacements, not all possible edits.
 
 `check_docx(task_id=..., render=True)` renders both copies with a shared deadline (60 seconds
