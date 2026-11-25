@@ -87,7 +87,8 @@ PROPERTIES = _w("rPr", "pPr", "tcPr", "trPr", "tblPr", "tblPrEx", "sectPr")
 RUN_WRAPPERS = TEXT_REVISIONS | _w("hyperlink", "smartTag", "customXml", "sdt", "sdtContent", "fldSimple", "dir", "bdo")
 TEXT = _w("t", "delText", "instrText", "delInstrText")
 LOCATED = (W + "p", W + "tblPr", W + "tblGrid", W + "trPr", W + "tcPr", W + "tblPrEx", W + "sectPr")
-FINDINGS = ("authors", "dates", "ids", "structure", "placement", "existing", "untracked", "not_undone", "quality", "origins")
+FINDINGS = ("authors", "dates", "ids", "structure", "placement", "existing", "untracked",
+            "not_undone", "quality", "origins", "ambiguous_revision_ids")
 
 
 class CheckLimit(Exception):
@@ -212,13 +213,22 @@ def _section_story_references(document):
     body = document.find(W + "body")
     if body is None:
         return
+    first_page_refs = {}
     for section in sections(body):
         for ref in _selected_children(section):
-            if ref.tag in (W + "headerReference", W + "footerReference"):
-                role = "header" if ref.tag == W + "headerReference" else "footer"
-                rid = next((value for attr in _RELATIONSHIP_IDS if (value := ref.get(attr))), None)
-                kind = ref.get(W + "type")
-                yield role, kind if kind in ("default", "first", "even") else None, rid
+            if ref.tag not in (W + "headerReference", W + "footerReference"):
+                continue
+            role = "header" if ref.tag == W + "headerReference" else "footer"
+            rid = next((value for attr in _RELATIONSHIP_IDS if (value := ref.get(attr))), None)
+            kind = ref.get(W + "type")
+            if kind == "first":
+                first_page_refs[role] = role, kind, rid
+            else:
+                yield role, kind if kind in ("default", "even") else None, rid
+        # A later section can use an inherited definition even if its source section did not.
+        title_page = _selected_child(section, W + "titlePg")
+        if title_page is not None and title_page.get(W + "val", "true") in ("true", "1", "on"):
+            yield from first_page_refs.values()
 
 
 def _linked_stories(parts, names, links, relationship_part, document):
@@ -769,8 +779,7 @@ def _revision_date_issue(date, utc, checked_at):
     return " ".join(issue for issue in (future_issue, display_issue) if issue) or None
 
 
-def _revision_id_issues(part, revisions, old_counts):
-    counts = Counter(_key(e) for e in revisions)
+def _revision_id_issues(part, counts, old_counts):
     issues = []
     # Splitting an old revision still creates elements requiring valid ids.
     # Do not attribute unchanged pre-existing id defects to this task.
@@ -789,7 +798,13 @@ def _story(part, a, b, author, checked_at):
               for e in a.iter(*TEXT_REVISIONS)} if a is not None else set()
     old_run_properties = {_sig(e) for e in a.iter(W + "rPrChange")} if a is not None else set()
     revisions = list(b.iter(*REVISION_TAGS))
-    found["ids"] = _revision_id_issues(part, revisions, old_counts)
+    counts = Counter(_key(e) for e in revisions)
+    found["ids"] = _revision_id_issues(part, counts, old_counts)
+    move_range_ends = (W + "moveFromRangeEnd", W + "moveToRangeEnd")
+    found["ambiguous_revision_ids"] = [
+        {"part": part, "id": key[1], "kind": _short(key[0]), "issue": "Cannot determine which occurrence is new."}
+        for key, count in counts.items() if 0 < old_counts[key] < count and key[0] not in move_range_ends
+    ]
     new, split = set(), 0
     same_stamp = set()
     for e in revisions:
@@ -832,7 +847,7 @@ def _story(part, a, b, author, checked_at):
             continue
         new_count += 1
         where = {"part": part, "id": key[1], "kind": _short(e.tag)}
-        if e.tag in (W + "moveFromRangeEnd", W + "moveToRangeEnd"):
+        if e.tag in move_range_ends:
             continue
         if e.get(W + "author") != author:
             found["authors"].append({**where, "author": e.get(W + "author")})
@@ -1112,20 +1127,27 @@ def check_docx(original: Path, candidate: Path, author: str, changes_start: int 
     if original_facts["issues"] or candidate_facts["issues"]:
         add("comment_facts", False, {"note": "See comment_facts for per-file coverage."}, "not_checked")
 
-    def add_revision_check(name, findings, detail, problem="observation"):
+    def add_revision_check(name, findings, detail, problem="observation", *, unchecked_ids=()):
         if story_unread:
             if isinstance(detail, list):
                 detail = {"issues": detail}
             detail = {**(detail or {}), "unread_story_parts": sorted(excluded_stories)}
             if not findings:
                 detail.pop("note", None)
-        add(name, not (findings or story_unread), detail, problem if findings else "not_checked")
+        if unchecked_ids:
+            detail = {**(detail or {}), "unchecked_revision_ids": unchecked_ids[:20],
+                      "unchecked_revision_id_count": len(unchecked_ids)}
+        add(name, not (findings or story_unread or unchecked_ids), detail, problem if findings else "not_checked")
 
+    ambiguous_ids = totals["ambiguous_revision_ids"]
+    count_label = "new_revisions_in_readable_stories" if story_unread else "new_revisions"
+    if ambiguous_ids:
+        count_label = "new_revisions_checked"
     add_revision_check("new_revision_authors", totals["authors"],
-        {"new_revisions_in_readable_stories" if story_unread else "new_revisions": new_count,
-         "unexpected_authors": totals["authors"][:20]})
+        {count_label: new_count, "unexpected_authors": totals["authors"][:20]}, unchecked_ids=ambiguous_ids)
     add_revision_check("new_revision_dates", totals["dates"],
-        {"issues": totals["dates"][:20], "count": len(totals["dates"])} if totals["dates"] else None, "warning")
+        {"issues": totals["dates"][:20], "count": len(totals["dates"])} if totals["dates"] else None, "warning",
+        unchecked_ids=ambiguous_ids)
     add_revision_check("new_revision_ids", totals["ids"], totals["ids"][:20])
     add_revision_check("new_revision_structure", totals["structure"], {
         "issues": totals["structure"][:20],
