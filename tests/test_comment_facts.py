@@ -178,8 +178,8 @@ def test_link_type_and_word_root_determine_notes_and_header_roles(tmp_path):
     primary = comments(note(0, "Review body"))["word/comments.xml"]
 
     def document(name, header):
-        return docx(tmp_path / name, [anchored(0, "Body")], {RELS: links, comment_part: primary,
-                    header_part: f'<w:hdr {NS}>{para(run(header))}</w:hdr>'})
+        return docx(tmp_path / name, [anchored(0, "Body"), section(header_reference("rId2"))],
+                    {RELS: links, comment_part: primary, header_part: f'<w:hdr {NS}>{para(run(header))}</w:hdr>'})
 
     original = document("original.docx", "Notice within 30 days")
     candidate = document("candidate.docx", "Notice within 45 days")
@@ -215,8 +215,9 @@ def test_linked_unreadable_header_keeps_body_and_declares_partial_comparison(tmp
     header = "word/notice-margin.xml"
     links = relationships((HEADER, "notice-margin.xml"))
     valid_header = f'<w:hdr {NS}>{para(run("Notice"))}</w:hdr>'
-    original = docx(tmp_path / "original.docx", [para(run("Pay in 30 days"))], {RELS: links, header: valid_header})
-    candidate = docx(tmp_path / "candidate.docx", [para(run("Pay in 45 days"))],
+    original = docx(tmp_path / "original.docx", [para(run("Pay in 30 days")), section(header_reference("rId1"))],
+                    {RELS: links, header: valid_header})
+    candidate = docx(tmp_path / "candidate.docx", [para(run("Pay in 45 days")), section(header_reference("rId1"))],
                      {RELS: links, header: "<broken>" if failure == "xml" else valid_header})
     if failure == "crc":
         corrupt_stored_member(candidate, header)
@@ -309,7 +310,7 @@ def test_valid_relationships_do_not_read_an_orphaned_header(tmp_path):
     body = [para(run("Body text"))]
     header = "word/header1.xml"
     shared = {header: f'<w:hdr {NS}>{para(run("Previous header"))}</w:hdr>'}
-    original = docx(tmp_path / "original.docx", body,
+    original = docx(tmp_path / "original.docx", [*body, section(header_reference("rId1"))],
                     {**shared, RELS: relationships((HEADER, "header1.xml"))})
     candidate = docx(tmp_path / "candidate.docx", body, {**shared, RELS: relationships()})
     inventory = read_docx(candidate, query="Previous header", context=0, format="data")
@@ -360,9 +361,9 @@ def test_section_reference_distinguishes_unavailable_and_removed_story(tmp_path,
 def test_incomplete_story_does_not_hide_revision_findings_in_readable_body(tmp_path):
     header = "word/header1.xml"
     shared = {RELS: relationships((HEADER, "header1.xml")), header: f'<w:hdr {NS}>{para(run("Notice"))}</w:hdr>'}
-    original = docx(tmp_path / "original.docx", [para(run("Clause"))], shared)
+    original = docx(tmp_path / "original.docx", [para(run("Clause")), section(header_reference("rId1"))], shared)
     new_revision = '<w:ins w:author="Another reviewer" w:id="7" w:date="2026-01-01T00:00:00Z">' + run(" added") + '</w:ins>'
-    candidate = docx(tmp_path / "candidate.docx", [para(run("Clause"), new_revision)],
+    candidate = docx(tmp_path / "candidate.docx", [para(run("Clause"), new_revision), section(header_reference("rId1"))],
                      {**shared, header: "<broken>"})
     report = check_docx(original, candidate, "Reviewer")
     checks = {item["check"]: item for item in report["checks"]}
@@ -376,9 +377,10 @@ def test_incomplete_story_does_not_hide_revision_findings_in_readable_body(tmp_p
 def test_partial_revision_checks_keep_duplicate_ids_without_speculative_repair_warning(tmp_path):
     header = "word/header1.xml"
     links = relationships((HEADER, "header1.xml"))
-    original = docx(tmp_path / "original.docx", [para(run("Clause"))], {RELS: links, header: "<broken>"})
+    original = docx(tmp_path / "original.docx", [para(run("Clause")), section(header_reference("rId1"))],
+                    {RELS: links, header: "<broken>"})
     addition = '<w:ins w:author="Reviewer" w:id="7" w:date="2026-01-01T00:00:00Z">' + run(" added") + '</w:ins>'
-    candidate = docx(tmp_path / "candidate.docx", [para(run("Clause"), addition, addition)],
+    candidate = docx(tmp_path / "candidate.docx", [para(run("Clause"), addition, addition), section(header_reference("rId1"))],
                      {RELS: links, header: f'<w:hdr {NS}>{para(run("Notice"))}</w:hdr>'})
     report = check_docx(original, candidate, "Reviewer")
     assert report["status"] == "diagnostic"
@@ -399,8 +401,8 @@ def test_case_only_archive_names_keep_parts_aligned_and_locators_literal(tmp_pat
     primary = comments(note(0, "Question"))["word/comments.xml"]
 
     def document(name, note_part, header_part, text):
-        return docx(tmp_path / name, [anchored(0, "Body")], {RELS: links, note_part: primary,
-                    header_part: f'<w:hdr {NS}>{para(run(text))}</w:hdr>'})
+        return docx(tmp_path / name, [anchored(0, "Body"), section(header_reference("rId2"))],
+                    {RELS: links, note_part: primary, header_part: f'<w:hdr {NS}>{para(run(text))}</w:hdr>'})
 
     original = document("original.docx", "word/notes.xml", "word/notice.xml", "Notice 30 days")
     candidate = document("candidate.docx", "Word/Notes.XML", "Word/Notice.XML",
@@ -472,7 +474,11 @@ def header_reference(rid, kind="default"):
             f'w:type="{kind}" r:id="{rid}"/>')
 
 
-@pytest.mark.parametrize("missing", ["target", "relationship"])
+def section(*references):
+    return f"<w:sectPr>{''.join(references)}</w:sectPr>"
+
+
+@pytest.mark.parametrize("missing", ["target", "relationship", "invalid_target"])
 @pytest.mark.parametrize("reverse", [False, True], ids=["forward", "reverse"])
 def test_unavailable_first_page_header_does_not_hide_default_header_change(tmp_path, missing, reverse):
     normal, first = "word/header1.xml", "word/header2.xml"
@@ -482,8 +488,9 @@ def test_unavailable_first_page_header_does_not_hide_default_header_change(tmp_p
                   {RELS: relationships((HEADER, "header1.xml"), (HEADER, "header2.xml")),
                    normal: f'<w:hdr {NS}>{para(run("General notice"))}</w:hdr>',
                    first: f'<w:hdr {NS}>{para(run("First-page notice"))}</w:hdr>'})
-    links = (relationships((HEADER, "header2.xml")).replace('Id="rId1"', 'Id="rId2"')
-             if missing == "target" else relationships())
+    target = "" if missing == "invalid_target" else "header2.xml"
+    links = (relationships() if missing == "relationship"
+             else relationships((HEADER, target)).replace('Id="rId1"', 'Id="rId2"'))
     after = docx(tmp_path / "candidate.docx", [para(run("Pay in 45 days")), f"<w:sectPr>{first_reference}</w:sectPr>"],
                  {RELS: links})
     original, candidate = (after, before) if reverse else (before, after)
@@ -491,11 +498,33 @@ def test_unavailable_first_page_header_does_not_hide_default_header_change(tmp_p
     issue, = report["unchecked_story_xml"]
     assert issue["side"] == ("original" if reverse else "candidate")
     assert issue["part"] == (first if missing == "target" else RELS)
-    if missing == "relationship":
+    if missing != "target":
         assert "rId2 (type=first)" in issue["issue"]
     assert len(report["changes"]["items"]) == 2
     changed, = [item for item in report["changes"]["items"] if item["kind"] == ("insert" if reverse else "delete")]
     assert changed["after" if reverse else "before"]["location"]["part"] == normal
+
+
+def test_unreadable_target_does_not_hide_removal_of_another_default_header(tmp_path):
+    removed, unreadable = "word/header1.xml", "word/header2.xml"
+    second = section(header_reference("rId2"))
+    first = para(run("Section one"), ppr=f'<w:pPr>{section(header_reference("rId1"))}</w:pPr>')
+    original = docx(tmp_path / "original.docx", [first, para(run("Pay in 30 days")), second],
+                    {RELS: relationships((HEADER, "header1.xml"), (HEADER, "header2.xml")),
+                     removed: f'<w:hdr {NS}>{para(run("First notice"))}</w:hdr>',
+                     unreadable: f'<w:hdr {NS}>{para(run("Second notice"))}</w:hdr>'})
+    links = relationships((HEADER, "header2.xml")).replace('Id="rId1"', 'Id="rId2"')
+    candidate = docx(tmp_path / "candidate.docx", [para(run("Section one"), ppr="<w:pPr><w:sectPr/></w:pPr>"),
+                     para(run("Pay in 45 days")), second], {RELS: links, unreadable: "<broken"})
+
+    for a, b, kind, side in ((original, candidate, "delete", "before"), (candidate, original, "insert", "after")):
+        report = check_docx(a, b, "Reviewer")
+        issue, = report["unchecked_story_xml"]
+        assert issue["part"] == unreadable
+        changes = report["changes"]["items"]
+        assert [change[side]["location"]["part"] for change in changes if change["kind"] == kind] == [removed]
+        assert any(change["kind"] == "replace" and change["after"]["location"]["part"] == "word/document.xml"
+                   for change in changes)
 
 
 @pytest.mark.parametrize("reverse", [False, True], ids=["forward", "reverse"])
@@ -517,26 +546,28 @@ def test_retargeted_header_missing_target_is_not_an_addition_or_deletion(tmp_pat
     assert (issue["part"], issue["side"]) == ("word/unavailable.xml", "original" if reverse else "candidate")
 
 
-def test_filename_only_header_is_excluded_from_read_search_and_changes(tmp_path):
+@pytest.mark.parametrize("linked", [False, True], ids=["filename_only", "unused_relationship"])
+def test_unattached_header_is_excluded_from_read_search_and_changes(tmp_path, linked):
     name, fee = "word/header9.xml", "Apply an extra fee"
+    shared = {RELS: relationships((HEADER, "header9.xml"))} if linked else {}
     original = docx(tmp_path / "original.docx", [para(run("Pay in 30 days"))],
-                    {name: f'<w:hdr {NS}>{para(run("Notice"))}</w:hdr>'})
+                    {**shared, name: f'<w:hdr {NS}>{para(run("Notice"))}</w:hdr>'})
     candidate = docx(tmp_path / "candidate.docx", [para(run("Pay in 45 days"))],
-                     {name: f'<w:hdr {NS}>{para(run("Notice"))}{para(run(fee))}</w:hdr>'})
+                     {**shared, name: f'<w:hdr {NS}>{para(run("Notice"))}{para(run(fee))}</w:hdr>'})
 
     for path in (original, candidate):
         compact = read_docx(path)
         assert "Pay in" in compact and "Notice" not in compact and fee not in compact
         result = read_docx(path, query=fee, context=0, format="data")
         assert result["matched_paragraphs"] == 0
-        assert name in result["unread_story_parts"]
+        assert (name in result.get("unread_story_parts", {})) is not linked
     for a, b in ((original, candidate), (candidate, original)):
         report = check_docx(a, b, "Reviewer")
         change, = report["changes"]["items"]
         assert change["kind"] == "replace" and change["after"]["location"]["part"] == "word/document.xml"
         assert name in report["changed_parts"]
-        assert {(issue["part"], issue["side"]) for issue in report["unchecked_story_xml"]} == {
-            (name, "original"), (name, "candidate")}
+        gaps = {(issue["part"], issue["side"]) for issue in report.get("unchecked_story_xml", ())}
+        assert gaps == (set() if linked else {(name, "original"), (name, "candidate")})
 
 
 def test_missing_map_does_not_expose_stale_header_in_read_or_comparison(tmp_path):
@@ -556,25 +587,31 @@ def test_missing_map_does_not_expose_stale_header_in_read_or_comparison(tmp_path
 
 
 @pytest.mark.parametrize("partial", [False, True], ids=["complete", "unreadable_footer"])
-def test_revisions_are_checked_in_new_readable_header(tmp_path, partial):
+@pytest.mark.parametrize("reviewer_first", [True, False], ids=["reviewer_first", "other_first"])
+def test_revisions_are_checked_in_new_readable_header(tmp_path, partial, reviewer_first):
     footer_role = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer"
     footer = "word/footer1.xml"
     header = "word/header1.xml"
     footer_xml = f'<w:ftr {NS}>{para(run("Footer"))}</w:ftr>'
-    body = [para(run("Clause"))]
-    original = docx(tmp_path / "original.docx", body, {RELS: relationships((footer_role, "footer1.xml")),
-                    footer: footer_xml})
+    body = para(run("Clause"))
+    footer_ref = header_reference("rId1").replace("headerReference", "footerReference")
+    original = docx(tmp_path / "original.docx", [body, section(footer_ref)],
+                    {RELS: relationships((footer_role, "footer1.xml")), footer: footer_xml})
     date = "2099-01-01T00:00:00Z"
     addition = f'<w:ins w:id="27" w:author="Other editor" w:date="{date}">' + run("Added") + '</w:ins>'
-    candidate = docx(tmp_path / "candidate.docx", body, {
+    reviewer = '<w:ins w:id="27" w:author="Reviewer" w:date="2025-01-01T00:00:00Z">' + run("First") + '</w:ins>'
+    revisions = (reviewer, addition) if reviewer_first else (addition, reviewer)
+    candidate = docx(tmp_path / "candidate.docx", [body, section(header_reference("rId2"), footer_ref)], {
         RELS: relationships((footer_role, "footer1.xml"), (HEADER, "header1.xml")),
         footer: "<broken>" if partial else footer_xml,
-        header: f'<w:hdr {NS}>{para(addition, addition)}</w:hdr>'})
+        header: f'<w:hdr {NS}>{para(*revisions)}</w:hdr>'})
     report = check_docx(original, candidate, "Reviewer")
     checks = {item["check"]: item for item in report["checks"]}
     authors = checks["new_revision_authors"]
     dates = checks["new_revision_dates"]
     assert authors["status"] == "observation" and dates["status"] == "warning"
+    count = "new_revisions_in_readable_stories" if partial else "new_revisions"
+    assert authors["detail"][count] == 2
     author_issue, = authors["detail"]["unexpected_authors"]
     date_issue, = dates["detail"]["issues"]
     assert (author_issue["author"], author_issue["part"]) == ("Other editor", header)
@@ -587,12 +624,32 @@ def test_revisions_are_checked_in_new_readable_header(tmp_path, partial):
         assert ids["detail"]["unread_story_parts"] == [footer]
 
 
+@pytest.mark.parametrize("renamed", [False, True], ids=["reattached", "renamed"])
+def test_byte_identical_header_does_not_create_new_revisions(tmp_path, renamed):
+    prior = '<w:ins w:id="41" w:author="Original editor" w:date="2024-01-01T00:00:00Z">' + run("Prior") + '</w:ins>'
+    header = f'<w:hdr {NS}>{para(prior)}</w:hdr>'
+    refs = section(header_reference("rId1"))
+    original = docx(tmp_path / "original.docx", [para(run("Pay in 30 days")), *([refs] if renamed else [])],
+                    {RELS: relationships((HEADER, "header1.xml")) if renamed else relationships(),
+                     "word/header1.xml": header})
+    name = "current-notice.xml" if renamed else "header1.xml"
+    candidate = docx(tmp_path / "candidate.docx", [para(run("Pay in 45 days")), refs],
+                     {RELS: relationships((HEADER, name)), f"word/{name}": header})
+    report = check_docx(original, candidate, "Reviewer")
+    checks = {item["check"]: item for item in report["checks"]}
+    assert checks["new_revision_authors"]["status"] == "passed"
+    assert checks["new_revision_authors"]["detail"] == {"new_revisions": 0}
+    assert checks["new_revision_dates"]["status"] == "passed"
+    change, = [item for item in report["changes"]["items"] if item["kind"] == "replace"]
+    assert (change["before"]["text_excerpt"], change["after"]["text_excerpt"]) == ("Pay in 30 days", "Pay in 45 days")
+
+
 @pytest.mark.parametrize("external", [False, True], ids=["internal", "external"])
 def test_package_metadata_folds_only_internal_part_name_case(tmp_path, external):
     header = "word/header1.xml"
     types = ("<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">"
              '<Override PartName="/word/header1.xml" ContentType="application/xml"/></Types>')
-    body = [para(run("Clause"))]
+    body = [para(run("Clause")), section(header_reference("rId1"))]
     parts = {header: f'<w:hdr {NS}>{para(run("Notice"))}</w:hdr>', "[Content_Types].xml": types}
     links = relationships((HEADER, "header1.xml"))
     if external:

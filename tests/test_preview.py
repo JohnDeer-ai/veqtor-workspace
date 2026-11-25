@@ -340,10 +340,11 @@ def test_search_and_page_calls_reuse_check_and_refuse_changed_bytes(tmp_path, mo
     assert missing['report']['preview']['unshown_changed_pages'] == [1, 2, 3]
     receipt = directory / 'check.json'
     cache = json.loads(receipt.read_text())
-    cache['format'] = 10
-    cache['report'].pop('comment_facts')
+    cache['format'] = 11
     receipt.write_text(json.dumps(cache))
-    refreshed = operations.perform(workspace, 'check_docx', dict(args))['report']
+    with monkeypatch.context() as patch:
+        patch.setattr(operations, 'render_pair', lambda *a, **kw: pytest.fail('Retain the rendered pages'))
+        refreshed = operations.perform(workspace, 'check_docx', dict(args))['report']
     assert len(calls) == 2 and refreshed['comment_facts'] == initial['report']['comment_facts']
     assert refreshed['preview']['preview_id'] == initial['report']['preview']['preview_id']
 
