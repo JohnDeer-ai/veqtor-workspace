@@ -58,6 +58,7 @@ BETWEEN_PARAGRAPHS = _w("bookmarkStart", "bookmarkEnd", "commentRangeStart", "co
                         "permStart", "permEnd", "proofErr") | MOVE_RANGES
 DOCUMENT = "word/document.xml"
 MANIFEST = "[Content_Types].xml"
+_CONTENT_TYPES = "{http://schemas.openxmlformats.org/package/2006/content-types}"
 DOCUMENT_RELS = "word/_rels/document.xml.rels"
 _OFFICE_REL = ("http://schemas.openxmlformats.org/officeDocument/2006/relationships/",
                "http://purl.oclc.org/ooxml/officeDocument/relationships/")
@@ -137,7 +138,7 @@ def _part_name(names, requested):
     return names[key], None
 
 
-def _relationship_target(link):
+def _internal_target_path(link):
     raw = link.get("Target", "")
     try:
         target = urlsplit(raw)
@@ -148,6 +149,13 @@ def _relationship_target(link):
     if (link.get("TargetMode", "Internal") != "Internal" or target.scheme or target.netloc
             or not path or any(mark in raw for mark in ("?", "#", "\\"))
             or any(ord(c) < 32 for c in raw)):
+        return None
+    return path
+
+
+def _relationship_target(link):
+    path = _internal_target_path(link)
+    if path is None:
         return None
     name = posixpath.normpath(path[1:] if path.startswith("/") else posixpath.join("word", path))
     key = _part_key(name)
@@ -219,7 +227,6 @@ def _linked_stories(parts, names, links, relationship_part, document):
         name, issue = _part_name(names, target)
         if issue:
             issues[name] = issue
-            uncertain_roles.add(role)
         else:
             linked.setdefault(name, set()).add(_STORY_ROLES[role])
 
@@ -237,6 +244,9 @@ def _linked_stories(parts, names, links, relationship_part, document):
         part = relationship_part or DOCUMENT_RELS
         prefix = issues[part] + " " if part in issues else ""
         issues[part] = prefix + "Section relationships could not be resolved: " + ", ".join(sorted(set(dangling))) + "."
+        if relationship_part is None:
+            legacy.clear()
+            uncertain_roles.update(_STORY_ROLES)
     return linked, legacy, issues, uncertain_roles
 
 
@@ -275,7 +285,7 @@ def _package(source: BinaryIO | Path):
             raise ValueError(f"{name}: {exc}") from exc
     if roots[document].tag != W + "document":
         raise ValueError(f"{document}: Unexpected document root.")
-    if roots[manifest].tag != "{http://schemas.openxmlformats.org/package/2006/content-types}Types":
+    if roots[manifest].tag != _CONTENT_TYPES + "Types":
         raise ValueError(f"{manifest}: Unexpected package manifest root.")
 
     relationship_part = None
@@ -318,19 +328,19 @@ def _package(source: BinaryIO | Path):
             stories[name] = roots[name]
         else:
             story_issues[name] = unread[name]["issue"] if name in unread else "Unexpected root in a linked story."
-            if name not in unread:
-                uncertain_roles.update(_STORY_ROLE_FOR_TAG[tag] for tag in expected)
+    unverified = set()
     for name, expected in legacy.items():
         if name in linked or name in comment_parts:
             continue
         if name in roots and roots[name].tag == expected:
             stories[name] = roots[name]
+            unverified.add(name)
         elif name in unread and name not in {part for part, _ in sources.values()}:
             story_issues[name] = unread[name]["issue"]
     if sources["comments"] == (None, None) and any(
             next(root.iter(*COMMENT_ANCHORS), None) is not None for root in stories.values()):
         sources["comments"] = relationship_part or DOCUMENT_RELS, "Comment anchors exist but no comments part could be located."
-    return parts, roots, unread, sources, (stories, story_issues, uncertain_roles)
+    return parts, roots, unread, sources, (stories, story_issues, uncertain_roles, unverified)
 
 
 def _package_with_hash(path: Path):
@@ -733,6 +743,18 @@ def _revision_date_issue(date, utc, checked_at):
     return " ".join(issue for issue in (future_issue, display_issue) if issue) or None
 
 
+def _revision_id_issues(part, revisions, old_counts):
+    counts = Counter(_key(e) for e in revisions)
+    issues = []
+    # Splitting an old revision still creates elements requiring valid ids.
+    # Do not attribute unchanged pre-existing id defects to this task.
+    for key, count in counts.items():
+        if (not key[1] and key not in old_counts) or count > max(1, old_counts[key]):
+            issues.append({"part": part, "id": key[1], "kind": _short(key[0]),
+                                 "issue": "missing id" if not key[1] else "id used more than once"})
+    return issues
+
+
 def _story(part, a, b, author, checked_at):
     found = {name: [] for name in FINDINGS}
     old_counts = Counter(_key(e) for e in a.iter(*REVISION_TAGS))
@@ -740,13 +762,7 @@ def _story(part, a, b, author, checked_at):
     groups = {(e.tag, e.get(W + "author"), e.get(W + "date")) for e in a.iter(*TEXT_REVISIONS)}
     old_run_properties = {_sig(e) for e in a.iter(W + "rPrChange")}
     revisions = list(b.iter(*REVISION_TAGS))
-    counts = Counter(_key(e) for e in revisions)
-    # Splitting an old revision still creates elements requiring valid ids.
-    # Do not attribute unchanged pre-existing id defects to this task.
-    for key, count in counts.items():
-        if (not key[1] and key not in old_keys) or count > max(1, old_counts[key]):
-            found["ids"].append({"part": part, "id": key[1], "kind": _short(key[0]),
-                                 "issue": "missing id" if not key[1] else "id used more than once"})
+    found["ids"] = _revision_id_issues(part, revisions, old_counts)
     new, split, seen = set(), 0, set()
     same_stamp = set()
     for e in revisions:
@@ -849,7 +865,17 @@ def _repeated(root, tag, key):
 
 
 def _package_entries(root):
-    return {(e.tag, tuple(sorted(e.attrib.items()))) for e in root if isinstance(e.tag, str)}
+    entries = set()
+    for node in root:
+        if not isinstance(node.tag, str):
+            continue
+        attrs = dict(node.attrib)
+        if node.tag == _REL + "Relationship" and _internal_target_path(node) is not None:
+            attrs["Target"] = _part_key(attrs["Target"])
+        elif node.tag == _CONTENT_TYPES + "Override" and "PartName" in attrs:
+            attrs["PartName"] = _part_key(attrs["PartName"])
+        entries.add((node.tag, tuple(sorted(attrs.items()))))
+    return entries
 
 
 def _other_children(root, skipped):
@@ -949,8 +975,8 @@ def check_docx(original: Path, candidate: Path, author: str, changes_start: int 
         checks.append(item)
 
     try:
-        before, left, unread_left, original_sources, (old_stories, unread_old_story, uncertain_old_roles), original_hash = _package_with_hash(original)
-        after, right, unread_right, candidate_sources, (new_stories, unread_new_story, uncertain_new_roles), candidate_hash = _package_with_hash(candidate)
+        before, left, unread_left, original_sources, (old_stories, unread_old_story, uncertain_old_roles, unverified_old), original_hash = _package_with_hash(original)
+        after, right, unread_right, candidate_sources, (new_stories, unread_new_story, uncertain_new_roles, unverified_new), candidate_hash = _package_with_hash(candidate)
     except CheckLimit as exc:
         return {**evidence, "status": "not_checked", "summary": {"errors": [], "observations": [], "warnings": [],
                 "not_checked": ["docx_preservation"]},
@@ -972,6 +998,12 @@ def check_docx(original: Path, candidate: Path, author: str, changes_start: int 
             key = _part_key(part)
             if key in excluded or (not opposite_names.get(key) and _STORY_ROLE_FOR_TAG.get(root.tag) in roles):
                 excluded_stories.add(part)
+    for old_part, new_part in _part_pairs(old_stories, new_stories):
+        part = new_part or old_part
+        if not (old_part and new_part) and (part in unverified_old or part in unverified_new):
+            excluded_stories.add(part)
+            story_unread.append({"part": part, "side": "original" if old_part else "candidate",
+                                 "issue": "Story attachment cannot be established from a conventional filename."})
     unread = [{"part": part, "side": side, **details}
               for side, failures, story_failures in (("original", unread_left, unread_old_story),
                                                     ("candidate", unread_right, unread_new_story))
@@ -1001,6 +1033,8 @@ def check_docx(original: Path, candidate: Path, author: str, changes_start: int 
         a, b = story_before.get(old_part), story_after.get(new_part)
         if a is None or b is None:
             totals["untracked"].append({"part": part, "differences": [{"where": "whole part", "change": "added or removed"}]})
+            if b is not None:
+                totals["ids"].extend(_revision_id_issues(part, b.iter(*REVISION_TAGS), Counter()))
             continue
         found = _story(part, _story_without_comment_anchors(a), _story_without_comment_anchors(b),
                        author, checked_at)
@@ -1086,6 +1120,8 @@ def check_docx(original: Path, candidate: Path, author: str, changes_start: int 
     changes = change_summary(story_before, story_after, changes_start)
     if story_unread:
         changes["scope"] += " Unavailable story parts are excluded from this list."
+    if unverified_old or unverified_new:
+        changes["unverified_story_parts"] = {"original": sorted(unverified_old), "candidate": sorted(unverified_new)}
     return {**evidence, "status": "diagnostic",
             "summary": {"errors": [], "observations": group["observation"], "warnings": group["warning"], "not_checked": group["not_checked"]},
             "checks": checks, "changed_parts": changed, "comment_facts": comment_facts,

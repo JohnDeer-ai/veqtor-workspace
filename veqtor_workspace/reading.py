@@ -16,6 +16,7 @@ from itertools import zip_longest
 from pathlib import Path
 
 from veqtor_workspace.checks import (
+    DOCUMENT,
     PROPERTY_CHANGES,
     REVISION_TAGS,
     TEXT_REVISIONS,
@@ -25,6 +26,7 @@ from veqtor_workspace.checks import (
     W,
     _package,
     _part_pairs,
+    _part_key,
     _short,
     _sig,
     _text,
@@ -462,8 +464,10 @@ def _comment_text_and_strikes(paragraphs):
 def _select_table_row(records, address, omitted):
     if not isinstance(address, str) or not address:
         raise ValueError("table_row must be a paragraph address, such as p1423 or word/document.xml#p1423.")
-    paragraph_id = address if "#" in address else f"word/document.xml#{address}"
-    target = next((record for record in records if record["id"] == paragraph_id), None)
+    part, sep, paragraph = address.rpartition("#")
+    part_key = _part_key(part) if sep else DOCUMENT
+    target = next((record for record in records if _part_key(record["location"]["part"]) == part_key
+                   and record["id"].rpartition("#")[2] == paragraph), None)
     if target is None:
         raise ValueError(f"Paragraph {address!r} was not found. Use the reader address from this document version.")
     row = next(target["node"].iterancestors(W + "tr"), None)
@@ -476,7 +480,7 @@ def _select_table_row(records, address, omitted):
     groups = [({**row_location, "cell": number},
                [by_node[p] for p in cell.iter(W + "p") if p in by_node])
               for number, cell in enumerate(_table_children(row, "tc", omitted), 1)]
-    return groups, {**row_location, "paragraph": paragraph_id, "cells": len(groups)}
+    return groups, {**row_location, "paragraph": target["id"], "cells": len(groups)}
 
 
 def read_docx(path, query=None, *, details=False, context=1, format="text", table_row=None):
@@ -500,7 +504,7 @@ def read_docx(path, query=None, *, details=False, context=1, format="text", tabl
         raise ValueError("Use either table_row or query.")
     path = Path(path)
     before_hash = hashlib.sha256(path.read_bytes()).hexdigest()
-    _, roots, unread, sources, (stories, story_issues, _) = _package(path)
+    _, roots, unread, sources, (stories, story_issues, _, unverified_stories) = _package(path)
     if hashlib.sha256(path.read_bytes()).hexdigest() != before_hash:
         raise ValueError("Document changed while reading; read the saved version again.")
     view = _reading_view(roots, sources, stories)
@@ -563,6 +567,8 @@ def read_docx(path, query=None, *, details=False, context=1, format="text", tabl
         result["table_row"] = row
     if story_issues:
         result["unread_story_parts"] = story_issues
+    if unverified_stories:
+        result["unverified_story_parts"] = sorted(unverified_stories)
     if auxiliary := {part: details["issue"] for part, details in unread.items() if part not in story_issues}:
         result["unread_auxiliary_xml"] = auxiliary
     if alternatives:
@@ -648,6 +654,8 @@ def _compact(result, matching_ids):
         lines.append(f"Comment facts limited ({issue['part']}): {issue['issue']}")
     for part, issue in result.get("unread_story_parts", {}).items():
         lines.append(f"Text coverage limited ({part}): {issue}")
+    if unverified := result.get("unverified_story_parts"):
+        lines.append("Legacy stories found by filename; document attachment unverified: " + ", ".join(unverified))
     if unread := result.get("unread_auxiliary_xml"):
         lines.append("Unparsed auxiliary XML: " + ", ".join(unread))
     if result["unread_embedded_parts"]:

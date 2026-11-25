@@ -340,7 +340,7 @@ def test_search_and_page_calls_reuse_check_and_refuse_changed_bytes(tmp_path, mo
     assert missing['report']['preview']['unshown_changed_pages'] == [1, 2, 3]
     receipt = directory / 'check.json'
     cache = json.loads(receipt.read_text())
-    cache['format'] = 8
+    cache['format'] = 9
     cache['report'].pop('comment_facts')
     receipt.write_text(json.dumps(cache))
     refreshed = operations.perform(workspace, 'check_docx', dict(args))['report']

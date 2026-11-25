@@ -465,3 +465,105 @@ def test_comment_selected_fallback_tokens_match_the_paragraph_projection(tmp_pat
     path = docx(tmp_path / "fallback.docx", body, comments(note(0, "Note")))
     paragraph, selected = read_docx(path, format="data")["items"]
     assert paragraph["text"] == selected["anchor_markup"] == "Pay\tnow\ntoday"
+
+
+def header_reference(rid, kind="default"):
+    return (f'<w:headerReference xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
+            f'w:type="{kind}" r:id="{rid}"/>')
+
+
+@pytest.mark.parametrize("reverse", [False, True], ids=["forward", "reverse"])
+def test_missing_named_header_does_not_hide_other_confirmed_story_change(tmp_path, reverse):
+    normal, first = "word/header1.xml", "word/header2.xml"
+    first_reference = header_reference("rId2", "first")
+    before = docx(tmp_path / "original.docx",
+                  [para(run("Pay in 30 days")), "<w:sectPr>" + header_reference("rId1") + first_reference + "</w:sectPr>"],
+                  {RELS: relationships((HEADER, "header1.xml"), (HEADER, "header2.xml")),
+                   normal: f'<w:hdr {NS}>{para(run("General notice"))}</w:hdr>',
+                   first: f'<w:hdr {NS}>{para(run("First-page notice"))}</w:hdr>'})
+    after = docx(tmp_path / "candidate.docx", [para(run("Pay in 45 days")), f"<w:sectPr>{first_reference}</w:sectPr>"],
+                 {RELS: relationships((HEADER, "header2.xml")).replace('Id="rId1"', 'Id="rId2"')})
+    original, candidate = (after, before) if reverse else (before, after)
+    report = check_docx(original, candidate, "Reviewer")
+    assert [(entry["part"], entry["side"]) for entry in report["unchecked_story_xml"]] == [
+        (first, "original" if reverse else "candidate")]
+    assert len(report["changes"]["items"]) == 2
+    changed, = [item for item in report["changes"]["items"] if item["kind"] == ("insert" if reverse else "delete")]
+    assert changed["after" if reverse else "before"]["location"]["part"] == normal
+
+
+def test_missing_map_does_not_expose_stale_header_in_read_or_comparison(tmp_path):
+    header, stale = "word/header1.xml", "word/header9.xml"
+    section = "<w:sectPr>" + header_reference("rId1") + "</w:sectPr>"
+    parts = {header: f'<w:hdr {NS}>{para(run("Current notice"))}</w:hdr>',
+             stale: f'<w:hdr {NS}>{para(run("Obsolete term"))}</w:hdr>'}
+    original = docx(tmp_path / "original.docx", [para(run("Pay in 30 days")), section],
+                    {**parts, RELS: relationships((HEADER, "header1.xml"))})
+    candidate = docx(tmp_path / "candidate.docx", [para(run("Pay in 45 days")), section], parts)
+    view = read_docx(candidate, query="Obsolete term", context=0, format="data")
+    assert view["matched_paragraphs"] == 0 and view["paragraphs"] == 1
+    assert RELS in view["unread_story_parts"]
+    report = check_docx(original, candidate, "Reviewer")
+    changed, = report["changes"]["items"]
+    assert changed["after"]["text_excerpt"] == "Pay in 45 days"
+
+
+@pytest.mark.parametrize("partial", [False, True], ids=["complete", "unreadable_footer"])
+def test_revision_ids_are_checked_in_new_readable_header(tmp_path, partial):
+    footer_role = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer"
+    footer = "word/footer1.xml"
+    header = "word/header1.xml"
+    footer_xml = f'<w:ftr {NS}>{para(run("Footer"))}</w:ftr>'
+    body = [para(run("Clause"))]
+    original = docx(tmp_path / "original.docx", body, {RELS: relationships((footer_role, "footer1.xml")),
+                    footer: footer_xml})
+    addition = '<w:ins w:id="27" w:author="Reviewer" w:date="2026-01-01T00:00:00Z">' + run("Added") + '</w:ins>'
+    candidate = docx(tmp_path / "candidate.docx", body, {
+        RELS: relationships((footer_role, "footer1.xml"), (HEADER, "header1.xml")),
+        footer: "<broken>" if partial else footer_xml,
+        header: f'<w:hdr {NS}>{para(addition, addition)}</w:hdr>'})
+    report = check_docx(original, candidate, "Reviewer")
+    ids = next(item for item in report["checks"] if item["check"] == "new_revision_ids")
+    assert ids["status"] == "observation"
+    issues = ids["detail"]["issues"] if partial else ids["detail"]
+    assert [(issue["id"], issue["part"]) for issue in issues] == [("27", header)]
+    if partial:
+        assert ids["detail"]["unread_story_parts"] == [footer]
+
+
+@pytest.mark.parametrize("external", [False, True], ids=["internal", "external"])
+def test_package_metadata_folds_only_internal_part_name_case(tmp_path, external):
+    header = "word/header1.xml"
+    types = ("<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">"
+             '<Override PartName="/word/header1.xml" ContentType="application/xml"/></Types>')
+    body = [para(run("Clause"))]
+    parts = {header: f'<w:hdr {NS}>{para(run("Notice"))}</w:hdr>', "[Content_Types].xml": types}
+    links = relationships((HEADER, "header1.xml"))
+    if external:
+        links = links.replace("</Relationships>",
+                              '<Relationship Id="rId2" Type="urn:test" Target="https://example.test/Case" '
+                              'TargetMode="External"/></Relationships>')
+    original = docx(tmp_path / "original.docx", body, {**parts, RELS: links})
+    candidate = docx(tmp_path / "candidate.docx", body, {**parts,
+                     RELS: links.replace("header1.xml", "HEADER1.XML").replace("/Case", "/CASE"),
+                     "[Content_Types].xml": types.replace("/word/header1.xml", "/WORD/HEADER1.XML")})
+    report = check_docx(original, candidate, "Reviewer")
+    assert report["changes"]["total"] == 0
+    assert set(report["changed_parts"]) == {RELS, "[Content_Types].xml"}
+    package = next(item for item in report["checks"] if item["check"] == "package_parts")
+    assert package["status"] == ("observation" if external else "passed")
+
+
+def test_short_table_address_resolves_the_actual_main_part_name(tmp_path):
+    from zipfile import ZipFile
+
+    table = f'<w:tbl><w:tr><w:tc>{para(run("English"))}</w:tc><w:tc>{para(run("Русский"))}</w:tc></w:tr></w:tbl>'
+    original = docx(tmp_path / "base.docx", [table])
+    candidate = tmp_path / "uppercase.docx"
+    with ZipFile(original) as before, ZipFile(candidate, "w") as after:
+        for name in before.namelist():
+            after.writestr("WORD/DOCUMENT.XML" if name == "word/document.xml" else name, before.read(name))
+    short = read_docx(candidate, table_row="p1", format="data")
+    full = read_docx(candidate, table_row="WORD/DOCUMENT.XML#p1", format="data")
+    assert short == full
+    assert short["table_row"]["paragraph"] == "WORD/DOCUMENT.XML#p1"

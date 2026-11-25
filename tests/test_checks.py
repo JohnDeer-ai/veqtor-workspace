@@ -294,8 +294,10 @@ def test_comment_reports_independent_facts(tmp_path, change):
 def test_package_changes(tmp_path):
     body = [para(run("Text"))]
     header = f'<w:hdr {NS}><w:p><w:r><w:t>Header</w:t></w:r></w:p></w:hdr>'
-    failed, _ = check(tmp_path, body, body, {"word/header1.xml": header}, {})
-    assert {"untracked_changes", "package_parts"} <= failed
+    failed, report = check(tmp_path, body, body, {"word/header1.xml": header}, {})
+    assert failed == {"package_parts"}
+    assert "untracked_changes" in report["summary"]["not_checked"]
+    assert report["changes"]["total"] == 0
     failed, _ = check(tmp_path, body, body, {}, {"word/vbaProject.bin": b"x"})
     assert "package_parts" in failed
 
