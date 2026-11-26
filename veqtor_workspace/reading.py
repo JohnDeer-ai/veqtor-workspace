@@ -86,8 +86,7 @@ NESTED_DELETION_WARNING = (
 )
 
 
-def _direct_strike(run):
-    properties = _selected_child(run, W + "rPr")
+def _direct_strike(properties):
     if properties is None:
         return None
     for tag, kind in (("dstrike", "double_strike"), ("strike", "strike")):
@@ -95,6 +94,18 @@ def _direct_strike(run):
         if value is not None and value.get(W + "val", "true") in ("true", "on", "1"):
             return kind
     return None
+
+
+_HIGHLIGHT_COLORS = frozenset((
+    "black", "blue", "cyan", "green", "magenta", "red", "yellow", "white",
+    "darkBlue", "darkCyan", "darkGreen", "darkMagenta", "darkRed", "darkYellow", "darkGray", "lightGray",
+))
+
+
+def _direct_highlight(properties):
+    element = _selected_child(properties, W + "highlight") if properties is not None else None
+    color = element.get(W + "val") if element is not None else None
+    return color if color in _HIGHLIGHT_COLORS else None
 
 
 def _deleted_row(row):
@@ -106,28 +117,41 @@ _INLINE_TEXT = {W + "tab": "\t", W + "ptab": "\t", W + "br": "\n", W + "cr": "\n
                 W + "noBreakHyphen": "\u2011", W + "softHyphen": "\u00ad"}
 
 
-def _visible_segments(node, *, formatting=False):
-    def walk(e, strike=None):
-        if e.tag in (W + "del", W + "moveFrom", W + "pPr", W + "rPr"):
-            return
-        if e is not node and e.tag in (W + "p", W + "txbxContent"):
-            return
-        if formatting and e.tag == W + "r":
-            strike = _direct_strike(e)
-        if e.tag == W + "t":
-            yield _text(e), strike
-        elif e.tag in _INLINE_TEXT:
-            yield _INLINE_TEXT[e.tag], strike
-        elif e.tag in (W + "footnoteReference", W + "endnoteReference"):
-            yield f"[{_short(e.tag)} {e.get(W + 'id')}]", strike
+def _is_run_token(node):
+    parent = node.getparent()
+    # Fallback markup can wrap a run token without changing its Word parent.
+    while parent is not None and parent.tag == _FALLBACK and parent.getparent() is not None and parent.getparent().tag == _ALTERNATE:
+        parent = parent.getparent().getparent()
+    return parent is not None and parent.tag == W + "r"
+
+
+def _text_segments(node, *, history=False, strikes=False, highlights=False):
+    def walk(e, strike=None, color=None):
+        tag = e.tag
+        if not history:
+            if tag in (W + "del", W + "moveFrom", W + "pPr", W + "rPr"):
+                return
+            if e is not node and tag in (W + "p", W + "txbxContent"):
+                return
+        if tag == W + "r" and (strikes or highlights):
+            properties = _selected_child(e, W + "rPr")
+            strike = _direct_strike(properties) if strikes else None
+            color = _direct_highlight(properties) if highlights else None
+        if tag == W + "t" or (history and tag == W + "delText"):
+            yield _text(e), strike, color
+        elif tag in _INLINE_TEXT and (not history or _is_run_token(e)):
+            yield _INLINE_TEXT[tag], strike, color
+        elif not history and tag in (W + "footnoteReference", W + "endnoteReference"):
+            yield f"[{_short(tag)} {e.get(W + 'id')}]", strike, color
         else:
             for child in _selected_children(e):
-                yield from walk(child, strike)
+                yield from walk(child, strike, color)
 
-    if any(a.tag in (W + "del", W + "moveFrom") for a in node.iterancestors()):
-        return
-    if any(_deleted_row(row) for row in node.iterancestors(W + "tr")):
-        return
+    if not history:
+        if any(a.tag in (W + "del", W + "moveFrom") for a in node.iterancestors()):
+            return
+        if any(_deleted_row(row) for row in node.iterancestors(W + "tr")):
+            return
     yield from walk(node)
 
 
@@ -136,22 +160,33 @@ def visible_text(node):
 
     Fields and numbering keep the existing read limits reported by paragraphs().
     """
-    return "".join(text for text, _ in _visible_segments(node))
+    return "".join(text for text, _, _ in _text_segments(node))
 
 
-def _text_and_strikes(node):
-    pieces, spans = [], []
+def _append_span(spans, start, end, key, value):
+    if spans and spans[-1]["end"] == start and spans[-1][key] == value:
+        spans[-1]["end"] = end
+    else:
+        spans.append({"start": start, "end": end, key: value})
+
+
+def _project_segments(segments):
+    pieces, strikes, highlights = [], [], []
     offset = 0
-    for text, strike in _visible_segments(node, formatting=True):
+    for text, strike, color in segments:
         end = offset + len(text)
         if strike and text:
-            if spans and spans[-1]["end"] == offset and spans[-1]["kind"] == strike:
-                spans[-1]["end"] = end
-            else:
-                spans.append({"start": offset, "end": end, "kind": strike})
+            _append_span(strikes, offset, end, "kind", strike)
+        if color and text:
+            _append_span(highlights, offset, end, "color", color)
         pieces.append(text)
         offset = end
-    return "".join(pieces), spans
+    formatting = {}
+    if strikes:
+        formatting["strikethrough_spans"] = strikes
+    if highlights:
+        formatting["highlight_spans"] = highlights
+    return "".join(pieces), formatting
 
 
 def _clip_strikes(spans, start, end):
@@ -159,8 +194,16 @@ def _clip_strikes(spans, start, end):
             for span in spans if span["end"] > start and span["start"] < end]
 
 
+def _extend_formatting(target, formatting, offset, length):
+    for key, spans in formatting.items():
+        shifted = [{**span, "start": offset + span["start"], "end": offset + min(span["end"], length)}
+                   for span in spans if span["start"] < length]
+        if shifted:
+            target.setdefault(key, []).extend(shifted)
+
+
 def _cell_excerpt(cell, projection, omitted):
-    pieces, spans = [], []
+    pieces, excerpt_formatting = [], {}
     offset = 0
     for p in cell.iter(W + "p"):
         if p in omitted:
@@ -172,12 +215,11 @@ def _cell_excerpt(cell, projection, omitted):
         text, formatting = projection(p)
         text = text[:available]
         pieces.append(text)
-        spans.extend({**span, "start": offset + span["start"], "end": offset + span["end"]}
-                     for span in _clip_strikes(formatting, 0, available))
+        _extend_formatting(excerpt_formatting, formatting, offset, len(text))
         offset += len(text)
         if offset == 100:
             break
-    return {"text": "".join(pieces), **({"strikethrough_spans": spans} if spans else {})}
+    return {"text": "".join(pieces), **excerpt_formatting}
 
 
 def _mark_strikes(text, spans, offset=0):
@@ -191,9 +233,49 @@ def _mark_strikes(text, spans, offset=0):
     return "".join(pieces) + text[cursor:]
 
 
+def _mark_read_formatting(item):
+    text = item["text"]
+    strikes = item.get("strikethrough_spans", ())
+    highlights = item.get("highlight_spans")
+    if not highlights:
+        return _mark_strikes(text, strikes)
+
+    # Keep highlights outermost. A strike crossing a color boundary closes
+    # and reopens there so both ranges stay readable and tags remain nested.
+    boundaries = {}
+    for span in highlights:
+        boundaries.setdefault(span["start"], {})[0] = (f"highlight:{span['color']}", "highlight")
+        boundaries.setdefault(span["end"], {})[0] = None
+    for span in strikes:
+        tag = span["kind"].replace("_", "-")
+        boundaries.setdefault(span["start"], {})[1] = (tag, tag)
+        boundaries.setdefault(span["end"], {})[1] = None
+
+    pieces, active, opened, cursor = [], [None, None], [], 0
+    for position, changes in sorted(boundaries.items()):
+        pieces.append(text[cursor:position])
+        for layer, tag in changes.items():
+            active[layer] = tag
+        tags = [tag for tag in active if tag is not None]
+        same_outer = 1 if opened and tags and opened[0] == tags[0] else 0
+        pieces.extend(f"[/{close}]" for _, close in reversed(opened[same_outer:]))
+        pieces.extend(f"[{start}]" for start, _ in tags[same_outer:])
+        opened, cursor = tags, position
+    return "".join(pieces) + text[cursor:]
+
+
 def _revision(e):
     return {"kind": _short(e.tag), "id": e.get(W + "id"),
             "author": e.get(W + "author"), "date": e.get(W + "date")}
+
+
+def _revision_content(node, highlights):
+    segments = _text_segments(node, history=True, highlights=highlights)
+    if not highlights:
+        return {"text": "".join(text for text, _, _ in segments)}
+
+    text, formatting = _project_segments(segments)
+    return {"text": text, **formatting}
 
 
 def _table_children(container, tag, omitted):
@@ -209,13 +291,13 @@ def _paragraph_nodes(root, omitted):
             yield number, paragraph
 
 
-def paragraphs(roots, *, omitted=None):
+def paragraphs(roots, *, omitted=None, highlights=False, revision_highlights=False):
     """Paragraph evidence shared by read_docx and the before/after check report."""
     if omitted is None:
         omitted, _, _ = _fallback_view(roots)
     records = []
     table_children = cache(lambda container, tag: _table_children(container, tag, omitted))
-    projection = cache(_text_and_strikes)
+    projection = cache(lambda p: _project_segments(_text_segments(p, strikes=True, highlights=highlights)))
     cell_excerpt = cache(lambda cell: _cell_excerpt(cell, projection, omitted))
     for part, root in sorted(roots.items()):
         tables = {e: i for i, e in enumerate(root.iter(W + "tbl"), 1)}
@@ -252,8 +334,7 @@ def paragraphs(roots, *, omitted=None):
                     continue
                 revisions.append({**_revision(e), "parents": [_revision(a) for a in reversed(list(e.iterancestors()))
                                                              if a.tag in TEXT_REVISIONS],
-                                  "text": "".join(_text(t) for t in (p if e in ancestors else e).iter(W + "t", W + "delText")
-                                                  if t not in omitted)})
+                                  **_revision_content(p if e in ancestors else e, revision_highlights)})
             tags = {e.tag for e in own}
             warnings = []
             if any(r["kind"] in ("del", "moveFrom") and r["parents"] for r in revisions):
@@ -268,9 +349,10 @@ def paragraphs(roots, *, omitted=None):
                 warnings.append("Tracked paragraph boundary: this record is an XML paragraph, not the final paragraph layout.")
             if table_structure.get(table):
                 warnings.append("Merged/tracked table structure: coordinates are XML row/cell positions; final grid is not evaluated.")
-            text, strikes = projection(p)
+            text, formatting = projection(p)
             records.append({"id": f"{part}#p{number}", "location": location, "text": text,
-                            "strikethrough_spans": strikes, "revisions": revisions, "warnings": warnings, "node": p})
+                            "strikethrough_spans": [], **formatting,
+                            "revisions": revisions, "warnings": warnings, "node": p})
     return records
 
 
@@ -337,7 +419,7 @@ def _reading_view(roots, sources, stories):
     return _fallback_view({**stories, **selected_comments})
 
 
-def comment_inventory(roots, sources, stories, *, records=None, view=None):
+def comment_inventory(roots, sources, stories, *, records=None, view=None, highlights=False):
     """Read comment facts for one package, including limits of the selected view."""
     (primary, issue), (extended, metadata_issue) = sources["comments"], sources["extended"]
     if issue:
@@ -355,19 +437,11 @@ def comment_inventory(roots, sources, stories, *, records=None, view=None):
         if uncovered.get(part):
             issues.append({"part": part, "issue": "Some comment XML has no stored fallback."})
     notes = [node for node in primary_root.iter(W + "comment") if node not in omitted]
-    items = _comments(stories, notes, roots.get(extended) if not metadata_issue else None, omitted, records)
+    items = _comments(stories, notes, roots.get(extended) if not metadata_issue else None, omitted, records, highlights)
     return {"total": len(notes) if complete else None, "items": items, "issues": issues}
 
 
-def _is_run_token(node):
-    parent = node.getparent()
-    # Fallback markup can wrap a run token without changing its Word parent.
-    while parent is not None and parent.tag == _FALLBACK and parent.getparent() is not None and parent.getparent().tag == _ALTERNATE:
-        parent = parent.getparent().getparent()
-    return parent is not None and parent.tag == W + "r"
-
-
-def _comments(roots, comments, extended, omitted, records):
+def _comments(roots, comments, extended, omitted, records, highlights):
     if not comments:
         return []
     by_node = {r["node"]: r["id"] for r in records} if records is not None else None
@@ -441,24 +515,24 @@ def _comments(roots, comments, extended, omitted, records):
         anchor_text = "".join(anchor["text"])
         done = ex.get(W15 + "done", "0") if ex is not None else None
         resolved = True if done in ("1", "true", "on") else False if done in ("0", "false", "off") else None
-        text, strikes = _comment_text_and_strikes(paragraphs[c])
+        text, formatting = _comment_text_and_formatting(paragraphs[c], highlights)
         result.append({"type": "comment", "id": cid, "author": c.get(W + "author"), "date": c.get(W + "date"),
                        "parent_comment_id": parent, "parent_status": parent_state, "resolved": resolved,
                        "paragraphs": anchor["paragraphs"], "anchor_markup": anchor_text,
                        "anchor_markup_excerpt": anchor_text[:240],
                        "anchor_status": ("ambiguous" if ids[cid] > 1 else "located" if anchor["paragraphs"] else "not_located"),
-                       "text": text, **({"strikethrough_spans": strikes} if strikes else {})})
+                       "text": text, **formatting})
     return result
 
 
-def _comment_text_and_strikes(paragraphs):
-    pieces, strikes, offset = [], [], 0
+def _comment_text_and_formatting(paragraphs, highlights):
+    pieces, comment_formatting, offset = [], {}, 0
     for p in paragraphs:
-        text, spans = _text_and_strikes(p)
+        text, formatting = _project_segments(_text_segments(p, strikes=True, highlights=highlights))
         pieces.append(text)
-        strikes.extend({**span, "start": offset + span["start"], "end": offset + span["end"]} for span in spans)
+        _extend_formatting(comment_formatting, formatting, offset, len(text))
         offset += len(text) + 1
-    return "\n".join(pieces), strikes
+    return "\n".join(pieces), comment_formatting
 
 
 def _select_table_row(records, address, omitted):
@@ -492,6 +566,8 @@ def read_docx(path, query=None, *, details=False, context=1, format="text", tabl
     Otherwise, query=None reads the whole document, and context selects adjacent XML
     paragraphs around matches. Matching paragraphs come first. No element, text-length or page cap:
     run_python stores the full output and supplies its single output_cursor continuation.
+    Direct Word highlight uses [highlight:color] in text and optional highlight_spans
+    in data. Each span uses zero-based Python character offsets [start, end) in its text.
     Stable paragraph IDs refer to this file version. No file edits or revision acceptance.
     """
     if type(context) is not int or context < 0:
@@ -509,8 +585,8 @@ def read_docx(path, query=None, *, details=False, context=1, format="text", tabl
         raise ValueError("Document changed while reading; read the saved version again.")
     view = _reading_view(roots, sources, stories)
     omitted, alternatives, _ = view
-    records = paragraphs(stories, omitted=omitted)
-    inventory = comment_inventory(roots, sources, stories, records=records, view=view)
+    records = paragraphs(stories, omitted=omitted, highlights=True, revision_highlights=details)
+    inventory = comment_inventory(roots, sources, stories, records=records, view=view, highlights=True)
     comments = inventory["items"]
     related = {}
     for comment in comments:
@@ -540,7 +616,7 @@ def read_docx(path, query=None, *, details=False, context=1, format="text", tabl
         for r in group:
             items.append({"type": "paragraph", "id": r["id"], "location": r["location"], "text": r["text"],
                           "revision_count": len(r["revisions"]), "warnings": r["warnings"],
-                          **({"strikethrough_spans": r["strikethrough_spans"]} if r["strikethrough_spans"] else {})})
+                          **{key: r[key] for key in ("strikethrough_spans", "highlight_spans") if r.get(key)}})
             if details:
                 for revision in r["revisions"]:
                     items.append({"type": "revision", "paragraph": r["id"], **revision})
@@ -612,7 +688,8 @@ def _compact(result, matching_ids):
         lines.append("[strike] and [double-strike] mark direct Word formatting.")
     if row := result.get("table_row"):
         lines.append(f"Physical table row containing {label(row['paragraph'])}.")
-    warnings, last_location, row_hint = {}, None, None
+    warnings, last_location = {}, None
+    has_table_match = False
     for item in result["items"]:
         if item["type"] in ("paragraph", "table_cell"):
             loc = item["location"]
@@ -624,29 +701,35 @@ def _compact(result, matching_ids):
                 last_location = location
                 if result["order"] == "matches_then_context" and (excerpts := loc.get("neighbor_cell_excerpts")):
                     for excerpt in excerpts:
-                        text = _mark_strikes(excerpt["text"], excerpt.get("strikethrough_spans", ()))
+                        text = _mark_read_formatting(excerpt)
                         lines.append(f"  c{excerpt['cell']} excerpt (up to 100 characters): {text}")
             if item["type"] == "table_cell":
                 continue
-            if row_hint is None and "cell" in loc and item["id"] in matching_ids:
-                row_hint = label(item["id"]) if loc["part"] == "word/document.xml" else item["id"]
+            if "cell" in loc and item["id"] in matching_ids:
+                has_table_match = True
             revision_mark = f"[r{item['revision_count']}] " if item["revision_count"] else ""
-            text = _mark_strikes(item["text"], item.get("strikethrough_spans", ()))
+            text = _mark_read_formatting(item)
             lines.append(f"{label(item['id'])} {revision_mark}{text}")
             for warning in item["warnings"]:
                 warnings.setdefault(warning, []).append(item["id"])
         elif item["type"] == "revision":
             meta = {k: item[k] for k in ("kind", "id", "author", "date", "parents")}
-            lines.append("  revision " + json.dumps(meta, ensure_ascii=False, separators=(",", ":")) + " " + item["text"])
+            lines.append("  revision " + json.dumps(meta, ensure_ascii=False, separators=(",", ":"))
+                         + " " + _mark_read_formatting(item))
         else:
             meta = {k: item[k] for k in ("id", "author", "date", "parent_comment_id", "parent_status", "resolved") if item.get(k) is not None}
             lines.append("  comment " + json.dumps(meta, ensure_ascii=False, separators=(",", ":"))
                          + f" at {ranges(item['paragraphs'])}: "
-                         + _mark_strikes(item["text"], item.get("strikethrough_spans", ())))
+                         + _mark_read_formatting(item))
             if item["anchor_markup_excerpt"]:
                 lines.append("    anchor excerpt: " + item["anchor_markup_excerpt"])
-    if row_hint:
-        lines.append(f"Read all cells in a hit's row with read_docx(path, table_row={row_hint!r}).")
+    if has_table_match:
+        if len(matching_ids) == 1:
+            paragraph_id, = matching_ids
+            row_hint = paragraph_id.removeprefix("word/document.xml#")
+            lines.append(f"Read all cells in a hit's row with read_docx(path, table_row={row_hint!r}).")
+        else:
+            lines.append("Pass the desired matching table paragraph ID as table_row (use the full ID outside the body).")
     for entry in result.get("alternate_content", ()):
         lines.append(f"Word compatibility in {entry['part']}: stored fallbacks used: {entry['fallbacks_used']}; "
                      f"omitted without a fallback: {entry['omitted_without_fallback']}. Word may choose a different branch.")

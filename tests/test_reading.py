@@ -399,6 +399,98 @@ def test_paragraph_tab_stop_is_not_text_but_run_tab_counts_in_strike_offsets(tmp
     assert "p1 Label\t[strike]Old[/strike] wording" in read_document(path)
 
 
+def test_direct_highlight_keeps_searchable_text_and_crossing_strike_ranges(tmp_path):
+    yellow = '<w:rPr><w:highlight w:val="yellow"/></w:rPr>'
+    struck_yellow = '<w:rPr><w:strike/><w:highlight w:val="yellow"/></w:rPr>'
+    struck_green = '<w:rPr><w:strike/><w:highlight w:val="green"/></w:rPr>'
+    strike = '<w:rPr><w:strike/></w:rPr>'
+    previous = rev("rPrChange", "11", "Earlier editor", yellow)
+    unmarked = f'<w:rPr><w:highlight w:val="none"/><w:shd w:fill="00FF00"/>{previous}</w:rPr>'
+    path = docx(tmp_path / "colors.docx", [
+        para(run("💡 "), run("yel", rpr=yellow), run("low", rpr=struck_yellow),
+             run("green", rpr=struck_green), run("tail", rpr=strike),
+             rev("del", "9", "Other", run("prior", "delText", rpr=yellow)),
+             rev("ins", "10", "New editor", run(" new", rpr=yellow))),
+        para(run("Plain", rpr=unmarked)),
+    ])
+    original = path.read_bytes()
+
+    paragraph, deletion, insertion = read_all(path, query="yellowgreen", context=0, details=True)
+    assert paragraph["text"] == "💡 yellowgreentail new"
+    assert paragraph["highlight_spans"] == [
+        {"start": 2, "end": 8, "color": "yellow"},
+        {"start": 8, "end": 13, "color": "green"},
+        {"start": 17, "end": 21, "color": "yellow"},
+    ]
+    assert paragraph["strikethrough_spans"] == [{"start": 5, "end": 17, "kind": "strike"}]
+    assert deletion["text"] == "prior"
+    assert deletion["highlight_spans"] == [{"start": 0, "end": 5, "color": "yellow"}]
+    assert insertion["highlight_spans"] == [{"start": 0, "end": 4, "color": "yellow"}]
+    assert read_docx(path, query="prior", context=0)["matched_paragraphs"] == 1
+
+    compact = read_document(path, details=True)
+    assert ("💡 [highlight:yellow]yel[strike]low[/strike][/highlight]"
+            "[highlight:green][strike]green[/strike][/highlight]"
+            "[strike]tail[/strike][highlight:yellow] new[/highlight]") in compact
+    assert " [highlight:yellow]prior[/highlight]" in compact
+    plain, = read_all(path, query="Plain", context=0)
+    assert "highlight_spans" not in plain
+    assert "highlight" not in read_document(path, query="Plain", context=0)
+    assert path.read_bytes() == original
+
+
+def test_nested_revision_history_keeps_inline_separators_and_highlight_offsets(tmp_path):
+    yellow = '<w:rPr><w:highlight w:val="yellow"/></w:rPr>'
+    line_break = _property_alternate("<w:tab/>", _property_alternate("<w:noBreakHyphen/>", "<w:br/>"))
+    second_number = _property_alternate(run("Omitted choice", "delText"), run("45", "delText", rpr=yellow))
+    removed = rev("del", "2", "Later editor", run("30", "delText", rpr=yellow),
+                  f"<w:r>{line_break}</w:r>", second_number,
+                  '<w:r><w:tab/><w:ptab w:alignment="left" w:relativeTo="margin" w:leader="none"/></w:r>',
+                  f"<w:r>{yellow}<w:noBreakHyphen/></w:r>", "<w:r><w:cr/><w:softHyphen/></w:r>")
+    path = docx(tmp_path / "revision-inline.docx",
+                [para(rev("ins", "1", "Earlier editor", run("Prefix "), removed, run(" suffix")))])
+
+    assert read_docx(path, query="30 45", context=0)["matched_paragraphs"] == 1
+    assert read_docx(path, query="3045", details=True, context=0)["matched_paragraphs"] == 0
+    assert read_docx(path, query="Omitted choice", context=0)["matched_paragraphs"] == 0
+
+    paragraph, insertion, deletion = read_all(path, query="30 45", details=True, context=0)
+    expected = "30\n45\t\t\u2011\n\u00ad"
+    assert paragraph["text"] == "Prefix  suffix"
+    assert insertion["text"] == f"Prefix {expected} suffix"
+    assert deletion["text"] == expected and deletion["parents"][0]["id"] == insertion["id"]
+    assert deletion["highlight_spans"] == [
+        {"start": 0, "end": 2, "color": "yellow"},
+        {"start": 3, "end": 5, "color": "yellow"},
+        {"start": 7, "end": 8, "color": "yellow"},
+    ]
+    compact = read_document(path, query="30 45", details=True, context=0)
+    assert ("[highlight:yellow]30[/highlight]\n[highlight:yellow]45[/highlight]\t\t"
+            "[highlight:yellow]\u2011[/highlight]\n\u00ad") in compact
+
+
+def test_revision_history_resolves_properties_once_per_run_per_view(tmp_path, monkeypatch):
+    from veqtor_workspace import reading
+
+    count = 2400
+    long_run = "<w:r>" + "<w:t>line</w:t><w:br/>" * count + "</w:r>"
+    path = docx(tmp_path / "revision-long-run.docx", [para(rev("ins", "1", "Editor", long_run))])
+    selected_child = reading._selected_child
+    property_lookups = 0
+
+    def count_run_properties(node, tag):
+        nonlocal property_lookups
+        if node.tag == reading.W + "r" and tag == reading.W + "rPr":
+            property_lookups += 1
+        return selected_child(node, tag)
+
+    monkeypatch.setattr(reading, "_selected_child", count_run_properties)
+    paragraph, insertion = read_all(path, details=True)
+    assert property_lookups <= 2
+    assert paragraph["text"] == insertion["text"] == "line\n" * count
+    assert "highlight_spans" not in insertion
+
+
 @pytest.mark.parametrize("strike,kind,tag", [("strike", "strike", "strike"), ("dstrike", "double_strike", "double-strike")])
 def test_compare_manual_strikethrough_far_into_unchanged_paragraph(tmp_path, strike, kind, tag):
     prefix, word, suffix = "Unchanged " * 70, "changed-format", " still present"
@@ -502,6 +594,7 @@ def test_table_row_full_address_selects_header_and_retains_empty_cell_boundary(t
     path = docx(tmp_path / "header.docx", [para(run("In body")), section],
                 {"word/header1.xml": header, RELS: relationships((HEADER, "header1.xml"))})
     found, = read_all(path, query="In header", context=0)
+    assert "table_row='word/header1.xml#p1'" in read_document(path, query="In header", context=0)
     result = read_docx(path, table_row=found["id"])
     assert [item["type"] for item in result["items"]] == ["table_cell", "paragraph", "table_cell"]
     compact = read_document(path, table_row=found["id"])
@@ -567,6 +660,43 @@ def test_neighbour_cell_excerpt_marks_direct_strike_and_clips_raw_text(tmp_path,
     assert neighbour["text"] == prefix + old + suffix
 
 
+def test_highlight_in_table_search_excerpt_and_full_row(tmp_path):
+    green = '<w:rPr><w:highlight w:val="green"/></w:rPr>'
+    left = _cell(para(run("Search hit")))
+    right = _cell(para(run("Intro")), para(run("Ж" * 110, rpr=green)))
+    path = docx(tmp_path / "row-colors.docx", [_table(_row(left, right))])
+
+    hit, = read_all(path, query="Search hit", context=0)
+    excerpt, = hit["location"]["neighbor_cell_excerpts"]
+    assert excerpt == {"cell": 2, "text": "Intro " + "Ж" * 94,
+                       "highlight_spans": [{"start": 6, "end": 100, "color": "green"}]}
+    compact = read_document(path, query="Search hit", context=0)
+    assert "c2 excerpt (up to 100 characters): Intro [highlight:green]" + "Ж" * 94 + "[/highlight]" in compact
+
+    last = read_all(path, table_row=hit["id"])[-1]
+    assert last["highlight_spans"] == [{"start": 0, "end": 110, "color": "green"}]
+    assert "[highlight:green]" + "Ж" * 110 + "[/highlight]" in read_document(path, table_row="p1")
+    report = check_docx(path, path, "Editor")
+    assert "highlight_spans" not in json.dumps(report)
+
+
+def test_highlight_in_comment_uses_fallback_and_offsets_after_paragraph_break(tmp_path):
+    properties = ('<w:rPr><mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" '
+                  'xmlns:qaAlt="urn:test:unsupported"><mc:Choice Requires="qaAlt">'
+                  '<w:highlight w:val="yellow"/></mc:Choice><mc:Fallback>'
+                  '<w:highlight w:val="green"/></mc:Fallback></mc:AlternateContent></w:rPr>')
+    note = rev("comment", "1", "Reviewer", para(run("First")) + para(run("Search in note", rpr=properties)))
+    body = para('<w:commentRangeStart w:id="1"/>', run("Anchor"), '<w:commentRangeEnd w:id="1"/>')
+    path = docx(tmp_path / "comment-colors.docx", [body], comments(note))
+
+    _, comment = read_all(path, query="Search in note", context=0)
+    assert comment["text"] == "First\nSearch in note"
+    assert comment["highlight_spans"] == [{"start": 6, "end": 20, "color": "green"}]
+    assert "First\n[highlight:green]Search in note[/highlight]" in read_document(path)
+    report = check_docx(path, path, "Editor")
+    assert "highlight_spans" not in report["comment_facts"]["candidate"]["items"][0]
+
+
 @pytest.mark.parametrize("with_fallback", [True, False])
 def test_alternate_cells_use_only_fallback_and_keep_xml_paragraph_ids(tmp_path, with_fallback):
     fallback = f'<mc:Fallback>{_cell(para(run("Stored fallback")))}</mc:Fallback>' if with_fallback else ""
@@ -624,11 +754,26 @@ def test_row_hint_uses_the_matching_paragraph_instead_of_context(tmp_path):
     path = docx(tmp_path / "hint.docx", [para(run("Intro hit")),
         _table(_row(_cell(para(run("Table hit"))), _cell(para(run("Adjacent")))))])
     outside = read_document(path, query="Intro hit", context=1)
-    assert "p2 Table hit" in outside and "table_row=" not in outside
+    assert "p2 Table hit" in outside and "table_row" not in outside
 
     inside = read_document(path, query="Table hit", context=1)
     assert "table_row='p2'" in inside
     assert "Read all cells" in read_document(path, query="Table hit", context=0)
+
+
+@pytest.mark.parametrize("reference_in_table", [True, False])
+def test_row_hint_leaves_the_choice_open_when_search_has_two_matches(tmp_path, reference_in_table):
+    reference = para(run("See clause 8.8."))
+    if reference_in_table:
+        reference = _table(_row(_cell(reference)))
+    clause = _table(_row(_cell(para(run("8.8 Payment is due within 45 days.")))))
+    path = docx(tmp_path / "clause.docx", [reference, clause])
+
+    compact = read_document(path, query="8.8", context=0)
+    assert "matches=2" in compact
+    assert compact.index("p1 See clause 8.8.") < compact.index("p2 8.8 Payment")
+    assert "Pass the desired matching table paragraph ID as table_row (use the full ID outside the body)." in compact
+    assert "table_row=" not in compact
 
 
 def _property_alternate(choice, fallback=None):
