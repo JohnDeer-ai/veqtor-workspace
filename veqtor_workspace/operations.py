@@ -216,6 +216,22 @@ def perform(w: Workspace, operation: str, args: dict) -> dict:
             result = {key: result[key] for key in fields}
             result["comment_facts"] = {**facts, **{side: {k: v for k, v in facts[side].items() if k != "items"}
                                                   for side in ("original", "candidate")}}
+            guidance = result["preview_guidance"]
+            if fragments := guidance["fragments"]:
+                limits = sorted({limit for fragment in fragments for limit in fragment["projection_limits"]})
+                affected = guidance["affected_paragraphs"]
+                read_args = (f"task_id={task_id!r}" if task_id
+                             else f"original={original!r}, candidate={candidate!r}")
+                if changes_start:
+                    read_args += f", changes_start={changes_start}"
+                result["preview_guidance"] = {
+                    "document": guidance["document"], "affected_paragraphs": affected,
+                    "warning": guidance["warning"],
+                    "projection_limits": limits,
+                    "projection_limits_scope": f"Based on excerpts for {len(fragments)} of {affected} affected paragraphs.",
+                    "read_more": f"Run check_docx({read_args}) for the full report. "
+                                 "This checks the current files, so compare original_sha256 and candidate_sha256 with the preview.",
+                }
             result["check_reused"] = True
         result["preview"] = select_pages(preview, pages, args["preview_side"], query)
         images = [base64.b64encode(Path(p).read_bytes()).decode() for p in result["preview"]["images"]]

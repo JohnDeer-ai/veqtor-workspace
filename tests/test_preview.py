@@ -357,3 +357,103 @@ def test_search_and_page_calls_reuse_check_and_refuse_changed_bytes(tmp_path, mo
     with pytest.raises(ValueError, match='changed since this preview'):
         operations.perform(workspace, 'check_docx', dict(args))
     assert len(calls) == 3
+
+
+@pytest.mark.parametrize(("task_mode", "affected_count", "field_in_excerpt"), [
+    (False, 7, True), (True, 7, False), (True, 3, True),
+], ids=["selected-paths", "editing-task", "short-sample"])
+def test_reused_preview_compacts_nested_deletion_guidance(
+    tmp_path, installed_renderer, task_mode, affected_count, field_in_excerpt,
+):
+    from test_checks import docx, math, para, rev, run
+
+    from veqtor_workspace.operations import perform
+    from veqtor_workspace.tasks import DocumentTasks
+
+    config = tmp_path / "preview.json"
+    config.write_text(json.dumps({"python": sys.executable, "script": str(installed_renderer)}))
+    workspace = Workspace(tmp_path / "state", Path(sys.executable), "Ilya", dynamic=True, preview_config=config)
+    original = docx(tmp_path / "source.docx", [para(run(f"Original clause {i}")) for i in range(1, 8)])
+    selection = {"original": str(original), "candidate": str(tmp_path / "result.docx"), "task_id": None}
+    candidate = Path(selection["candidate"])
+    if task_mode:
+        task = DocumentTasks(workspace).start(str(original))
+        candidate = Path(task["cwd"]) / task["candidate"]
+        selection = {"original": None, "candidate": None, "task_id": task["task_id"]}
+
+    field = '<w:fldSimple w:instr="PAGE">' + run("1") + '</w:fldSimple>'
+    extra_markup = {6: math("X")}
+    short_sample = affected_count == 3
+    if field_in_excerpt:
+        extra_markup.update({1: field, 2: field})
+    if short_sample:
+        extra_markup[3] = math("Y")
+    body = []
+    for i in range(1, 8):
+        text = run(f"Clause {i} " + "long proposed text " * 60)
+        if i <= affected_count:
+            text = rev("ins", str(i), "Other", text, rev("del", str(i + 20), "Ilya", run("removed", "delText")))
+        body.append(para(text, extra_markup.get(i, "")))
+    docx(candidate, body)
+
+    def check(**args):
+        return perform(workspace, "check_docx", {
+            **selection, "render": False, "preview_id": None, "preview_pages": None,
+            "preview_side": "candidate", "preview_timeout_seconds": 60, **args,
+        })
+
+    first = check(render=True)["report"]
+    guidance = first["preview_guidance"]
+    sample_count = min(5, affected_count)
+    assert guidance["affected_paragraphs"] == affected_count and len(guidance["fragments"]) == sample_count
+    assert all(len(fragment["proposed_text"]) == 900 for fragment in guidance["fragments"])
+    assert "text_view" in guidance and "excerpt_order" in guidance
+    preview_id = first["preview"]["preview_id"]
+    directory = Path(first["preview"]["directory"])
+    receipt = directory / "check.json"
+    cached = receipt.read_bytes()
+    assert json.loads(cached)["report"]["preview_guidance"] == guidance
+    (directory / "candidate/page-text.json").write_text(json.dumps(["Section 9 payment terms"]))
+
+    reply = check(preview_id=preview_id, preview_query="section 9")
+    repeated = reply["report"]
+    assert repeated["check_reused"] is True and receipt.read_bytes() == cached
+    assert reply["images"] == [PNG]
+    assert repeated["preview"]["shown_pages"] == [1]
+    assert repeated["preview"]["search"]["matches"] == [{"page": 1, "excerpt": "Section 9 payment terms"}]
+    for field in ("comparison", "summary", "native_word", "checked_at_utc", "original_sha256", "candidate_sha256"):
+        assert repeated[field] == first[field]
+    excerpt_limits = [limit for fragment in guidance["fragments"] for limit in fragment["projection_limits"]]
+    limits = sorted(set(excerpt_limits))
+    assert len(limits) == int(field_in_excerpt) + int(short_sample)
+    if field_in_excerpt:
+        assert len(excerpt_limits) == len(limits) + 1
+    request = {key: value for key, value in selection.items() if value is not None}
+    selection_text = ", ".join(f"{key}={value!r}" for key, value in request.items())
+    current_files = "This checks the current files, so compare original_sha256 and candidate_sha256 with the preview."
+    assert repeated["preview_guidance"] == {
+        "document": "candidate", "affected_paragraphs": affected_count, "warning": guidance["warning"],
+        "projection_limits": limits,
+        "projection_limits_scope": f"Based on excerpts for {sample_count} of {affected_count} affected paragraphs.",
+        "read_more": f"Run check_docx({selection_text}) for the full report. {current_files}",
+    }
+
+    full_again = check()["report"]
+    assert full_again["preview_guidance"] == guidance and full_again["checks"] == first["checks"]
+    more = check(preview_id=preview_id, preview_pages=[1], changes_start=5)["report"]
+    assert more["preview_guidance"] == guidance and more["changes"]["next_start"] is None
+    assert [item["after"]["id"] for item in more["changes"]["items"]] == [
+        "word/document.xml#p6", "word/document.xml#p7",
+    ]
+    assert any("equation" in limit for limit in more["changes"]["items"][0]["after"]["warnings"])
+    reused = check(preview_id=preview_id, preview_pages=[1], changes_start=5)["report"]
+    assert reused["check_reused"] is True and reused["changes"] == more["changes"]
+    assert reused["preview_guidance"] == {
+        **repeated["preview_guidance"],
+        "read_more": f"Run check_docx({selection_text}, changes_start=5) for the full report. {current_files}",
+    }
+    full_at_offset = check(**request, changes_start=5)["report"]
+    assert full_at_offset["preview_guidance"] == guidance
+    assert full_at_offset["changes"] == reused["changes"] and "preview" not in full_at_offset
+    for key in ("original_sha256", "candidate_sha256"):
+        assert full_at_offset[key] == reused[key]
